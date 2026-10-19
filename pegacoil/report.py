@@ -2,12 +2,16 @@
 
 import math
 
-from .design import ALPHA_CU, HALBACH_SEGMENTS, MAGNETS, VIA_AMPS, _better, layer_thickness
+from .design import ALPHA_CU, COOLING, HALBACH_SEGMENTS, MAGNETS, VIA_AMPS, _better, layer_thickness
 from .rotor import IRON_T, stack
 
 
 def _n(x, d=2):
     return f'{x:,.{d}f}'.replace(',', ' ').replace('.', ',')
+
+
+def cooling_name(h):
+    return next((k for k, v in COOLING.items() if abs(v - h) < 1e-6), 'eigene Kühlung')
 
 
 def torque_text(t):
@@ -70,7 +74,9 @@ def summary(d, results=None, r_exact=None):
         f'Kupfer: außen {_n(d.outer_oz, 1)} oz ({_n(ts[0] * 1000, 0)} µm)'
         + (f', innen {_n(p.inner_oz, 1)} oz ({_n(ts[1] * 1000, 1)} µm)' if d.layers > 2 else ''),
         *build,
-        f'Windungen: {d.turns} je Lage, {d.turns * d.layers} je Spule',
+        f'Lagen geschaltet: {g.par} Paar(e) parallel' + (f' × {g.ns} Gruppen in Reihe' if g.ns > 1 else '')
+        + (' (alle Lagen in Reihe)' if g.par == 1 and g.ns > 1 else ''),
+        f'Windungen: {d.turns} je Lage, {d.turns * 2 * g.ns} je Spule wirksam',
         f'Bahnbreite {_n(d.w, 3)} mm, Abstand {_n(d.s, 3)} mm',
         f'Spulenbereich: r = {_n(g.r1, 1)} … {_n(g.r2, 1)} mm',
         '',
@@ -79,7 +85,7 @@ def summary(d, results=None, r_exact=None):
         f'Dauerstrom: {_n(d.current, 2)} A, höchstens {_n(d.i_max, 2)} A'
         + (' – Treiber muss den Anlaufstrom darauf begrenzen' if d.limited else ''),
         f'Verlustleistung Kupfer: {_n(d.p_cu, 1)} W → Platinen ca. +{_n(d.rise, 0)} K'
-        f' (zulässig +{_n(p.max_rise, 0)} K, ruhende Luft)',
+        f' (zulässig +{_n(p.max_rise, 0)} K, {cooling_name(p.h_air)}, {_n(p.h_air, 0)} W/m²K)',
         '',
         f'Drehmomentkonstante: {_n(d.kt * 1000, 2)} mNm/A',
         f'Dauer-Drehmoment: {torque_text(d.torque)}',

@@ -129,28 +129,33 @@ def spiral_in(g, N, j, rv):
 
 def coil_local(g, N):
     """Bahnen je Lage, Durchkontaktierungen und Anschlusspunkte einer Spule in Lage um +x."""
-    n, nv = g.n, g.n // 2
+    n = g.n
+    ns, par = g.ns, g.par
     rv = g.hole_vias(N)
     angs = g.row_angles()
     tp0 = corner(g, 0, 'TP')
     tm0 = corner(g, 0, 'TM')
     th_pl = g.ang(g.r_l, g.dl0)
+    s0 = g.s0  # Anfang der 1. Gruppe bei parallelen Paaren (berührt die Zuleitung von Lage 1)
     layers = {}
-    for j in range(nv):
-        core = spiral_in(g, N, j, rv)
+    for j in range(n // 2):
+        k = j // par  # Gruppe: Paare einer Gruppe parallel, Gruppen in Reihe
+        core = spiral_in(g, N, k, rv)
         inn = []
-        if j > 0:
-            xa = angs[j]
+        if k > 0:
+            xa = angs[k]
             inn = [('L', polar(g.r_v, xa), polar(g.r_l, xa)), ('A', g.r_l, xa, th_pl), ('L', polar(g.r_l, th_pl), tp0)]
+        elif j > 0:
+            inn = [('L', s0, tp0)]
         layers[2 * j] = inn + core
         out = reverse([mirror(pr) for pr in core])
-        if j == nv - 1:
+        if k == ns - 1:
             out.append(('L', tm0, polar(g.r_v, angs[0])))
         else:
-            xa = angs[j + 1]
+            xa = angs[k + 1]
             out += [('L', tm0, polar(g.r_l, -th_pl)), ('A', g.r_l, -th_pl, xa), ('L', polar(g.r_l, xa), polar(g.r_v, xa))]
         layers[2 * j + 1] = out
-    vias = [(r, 0.0) for r in rv] + [polar(g.r_v, a) for a in angs]
+    vias = [(r, 0.0) for r in rv] + [polar(g.r_v, a) for a in angs] + ([s0] if par > 1 else [])
     return layers, vias, tp0, polar(g.r_v, angs[0])
 
 

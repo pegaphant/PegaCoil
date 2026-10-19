@@ -61,8 +61,8 @@ def check(layout, coils=None, limit=20):
     def keep(coil):
         return coils is None or coil in coils or coil == -1
 
-    holes = [(v.x, v.y, g.vr) for v in layout.vias if keep(v.coil)]
-    holes += [(p.x, p.y, g.pad_r) for p in layout.pads if keep(p.coil)]
+    holes = [(v.x, v.y, g.vr, v.net) for v in layout.vias if keep(v.coil)]
+    holes += [(p.x, p.y, g.pad_r, p.net) for p in layout.pads if keep(p.coil)]
     # Durchkontaktierungen/Pads untereinander
     for i in range(len(holes)):
         for j in range(i + 1, len(holes)):
@@ -81,8 +81,11 @@ def check(layout, coils=None, limit=20):
                 L = math.dist(a, b)
                 segs.append((a, b, t.width / 2, ti, acc, acc + L))
                 acc += L
-            e0, e1 = pts[0], pts[-1]
-            conn.append({h for h, (x, y, r) in enumerate(holes) if math.hypot(x - e0[0], y - e0[1]) < r or math.hypot(x - e1[0], y - e1[1]) < r})
+            # verbunden: Bahn endet in der Bohrung oder läuft durch ihre Mitte (gleiches Netz)
+            conn.append({
+                h for h, (x, y, r, net) in enumerate(holes)
+                if net == t.net and min(_pseg((x, y), a, b) for a, b in zip(pts, pts[1:])) < r
+            })
         grid = {}
         for si, (a, b, hw, _, _, _) in enumerate(segs):
             for gx in range(math.floor(min(a[0], b[0]) / cell), math.floor(max(a[0], b[0]) / cell) + 1):
@@ -108,7 +111,7 @@ def check(layout, coils=None, limit=20):
                         errors.append(f'Lage {layer + 1}: Bahnen zu nah ({gap:.3f} mm) bei ({a[0]:.2f}, {a[1]:.2f})')
                         if len(errors) >= limit:
                             return errors
-        for hi, (x, y, r) in enumerate(holes):
+        for hi, (x, y, r, _) in enumerate(holes):
             for gx in range(math.floor((x - r) / cell) - 1, math.floor((x + r) / cell) + 2):
                 for gy in range(math.floor((y - r) / cell) - 1, math.floor((y + r) / cell) + 2):
                     for si in grid.get((gx, gy), []):

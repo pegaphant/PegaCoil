@@ -43,6 +43,7 @@ COILS = [('Automatisch', 0)] + [(str(c), c) for c in sorted(set(_design.COIL_CHO
 BOARDS = [('3 Platinen (je Phase eine)', 3), ('1 Platine (alle 3 Phasen)', 1)]
 ROTORS = [('Halbach (beidseitig)', 'halbach'), ('Magnete auf Stahlrückschluss (beidseitig)', 'iron')]
 GRADES = [(g, g) for g in reversed(list(_design.MAGNETS))]  # N52 zuerst
+COOLINGS = [(f'{k} ({v:g} W/m²K)', v) for k, v in _design.COOLING.items()]
 OUTER = [('Automatisch (bis 13 oz)', 0.0)] + [(f'{o:g} oz ({o * 35:g} µm)', o) for o in _design.OZ_CHOICES]
 INNER = [('Automatisch (wie außen, bis 6 oz)', 0.0)] + [(f'{o:g} oz ({o * 35:g} µm)'.replace('.', ','), o) for o in _design.INNER_OZ_CHOICES]
 
@@ -78,6 +79,7 @@ def _params(inputs):
         magnet=_choice(inputs, 'magnet', GRADES),
         magnet_h=val('magnet_h') * 10,
         clearance=val('clearance'),
+        h_air=_choice(inputs, 'cooling', COOLINGS),
         max_rise=val('rise'),
         max_rpm=val('max_rpm'),
         min_trace=val('min_trace'),
@@ -98,7 +100,7 @@ def _compute(inputs):
     return _last['result']
 
 
-SIZE_IDS = ('od', 'id', 'volt', 'boards', 'rotor', 'magnet', 'magnet_h', 'clearance', 'layers', 'coils', 'outer_oz',
+SIZE_IDS = ('od', 'id', 'volt', 'cooling', 'boards', 'rotor', 'magnet', 'magnet_h', 'clearance', 'layers', 'coils', 'outer_oz',
             'inner_oz', 'b_gap', 'rise', 'max_rpm',
             'min_trace', 'min_space', 'via_drill', 'via_pad', 'pad_drill', 'pad_d')
 _sync = {}  # Werte, die PegaCoil selbst gesetzt hat (deren Änderungsereignis wird übergangen)
@@ -176,6 +178,7 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             inputs.addValueInput('id', 'Innendurchmesser', 'mm', adsk.core.ValueInput.createByString('10 mm'))
             inputs.addFloatSpinnerCommandInput('volt', 'Spannung (V)', '', 1, 400, 1, 12)
             inputs.addFloatSpinnerCommandInput('power', 'Motorleistung W (Welle)', '', 0, 5000, 1, 0)
+            _dropdown(inputs, 'cooling', 'Kühlung', COOLINGS)
             _dropdown(inputs, 'boards', 'Aufbau', BOARDS)
             _dropdown(inputs, 'rotor', 'Magnete', ROTORS)
             _dropdown(inputs, 'magnet', 'Magnetsorte', GRADES)

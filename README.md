@@ -76,7 +76,10 @@ Farben: rot = ↑ axial / N oben, blau = ↓ axial / S oben, gelb = tangential (
   k = π/Polteilung, g = Platinendicke + 2 × Luft. Mehr Pole = kürzere Polteilung = mehr Streufeld; die Polzahl
   wird mitgesucht. Gerechnet wird mit dem Mittel 2/π · B1.
 - **Drehmoment**: Kt = 2 · m · k_w · B · Σ (r_außen² − r_innen²) aller radialen Leiter (m Spulen je Phase).
-- **Wärme**: ruhende Luft, beide Seiten, h ≈ 12 W/(m²·K).
+- **Wärme**: Wärmeübergang je Platinenseite nach *Kühlung*: ruhende Luft 12, drehende Rotorscheiben 25,
+  Fahrtwind 50, Lüfter 80 W/(m²·K) (Richtwerte). Zulässiger Kupferverlust = h · 2 · Fläche · Erwärmung je Platine.
+- **Lagen** werden in Gruppen geschaltet: Paare einer Gruppe parallel, Gruppen in Reihe (automatisch die beste
+  Aufteilung). Parallel = mehr Querschnitt bei gleicher Windungszahl; sonst brächten mehr Lagen nur mehr Windungen.
 - **Abstandsprüfung**: eigene Prüfung jeder Lage (auch zwischen Windungen derselben Spule – KiCad sieht das nicht,
   weil eine Spule ein Netz ist).
 

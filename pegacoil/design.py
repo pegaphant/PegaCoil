@@ -23,6 +23,12 @@ RHO_CU = 1.72e-8  # Ohm·m bei 20 °C
 ALPHA_CU = 0.00393  # 1/K
 OZ_MM = 0.035  # 1 oz/ft² Kupfer ≈ 35 µm
 H_AIR = 12.0  # W/(m²·K), freie Konvektion + Strahlung je Seite
+COOLING = {  # Wärmeübergang je Seite in W/(m²·K) – grobe Richtwerte
+    'ruhende Luft': 12.0,
+    'drehende Rotorscheiben (Luftwirbel)': 25.0,
+    'Fahrtwind (Fahrrad)': 50.0,
+    'Lüfter': 80.0,
+}
 KW = math.sqrt(3) / 2  # Wicklungsfaktor bei 3 Spulen : 2 Polen
 EDGE_PAD = 0.5  # Pad-Kupfer bis Außenkante
 VIA_AMPS = 1.0  # grobe Belastbarkeit einer 0,3-mm-Durchkontaktierung
@@ -68,6 +74,8 @@ class Params:
     magnet_h: float = 5.0  # mm Magnetdicke je Seite
     clearance: float = 0.5  # mm Luft je Seite zwischen Platine und Magnet
     pole_arc: float = 0.8  # Polbedeckung (nur Rückschluss; Halbach füllt den Umfang)
+    parallel: int = 0  # Lagenpaare je Gruppe parallel (Gruppen in Reihe); 0 = automatisch
+    h_air: float = H_AIR  # W/(m²·K) Wärmeübergang je Seite (siehe COOLING)
 
 
 def flux(p, poles, r_m, board_t):
@@ -116,6 +124,9 @@ class Geo:
 
     def __init__(self, p, n, nc, w, s, r1):
         self.p, self.n, self.nc, self.w, self.s, self.r1 = p, n, nc, w, s, r1
+        # Lagenpaare: je `par` parallel in einer Gruppe, `ns` Gruppen in Reihe
+        self.par = max(1, p.parallel) if (n // 2) % max(1, p.parallel) == 0 else 1
+        self.ns = (n // 2) // self.par
         self.phi = math.pi / nc
         self.sin, self.cos = math.sin(self.phi), math.cos(self.phi)
         self.pitch = w + s
@@ -173,7 +184,7 @@ class Geo:
         c = self.w / 2 + self.s + self.vh
         hi = self.r2 - self.d(N - 1) - c
         lo = max(self.r1 + self.d(N - 1) + c, (self.dl(N) + c) / self.sin)
-        nv = self.n // 2
+        nv = self.ns
         if hi - lo < (nv - 1) * self.via_sp - 1e-9:
             return None
         rv = [hi - j * self.via_sp for j in range(nv)]
@@ -189,14 +200,22 @@ class Geo:
             return None
         t0 = -self.ang(self.r_v, self.dl_t)
         step = 2 * math.asin(min(1.0, (2 * self.vh + self.s) / (2 * self.r_v)))
-        angs = [t0 + j * step for j in range(self.n // 2)]
+        angs = [t0 + j * step for j in range(self.ns)]
         clear = self.vh + self.w / 2 + self.s
         limit = self.ang(self.r_v, self.dl0) - 2 * math.asin(min(1.0, clear / (2 * self.r_v)))
+        if self.par > 1:  # Anfangs-Durchkontaktierung der parallelen Paare (s0) freihalten
+            limit = min(limit, self.ang(self.r_v, self.dl_t) - 2 * math.asin(min(1.0, (self.vr + self.vh + self.s) / (2 * self.r_v))))
         if angs[-1] > limit + 1e-12:
             return None
-        if self.n > 2 and angs[1] - step / 2 < -self.ang(self.r_l, self.dl0):
+        if self.ns > 1 and angs[1] - step / 2 < -self.ang(self.r_l, self.dl0):
             return None
         return angs
+
+    @property
+    def s0(self):
+        """Anfang der 1. Gruppe paralleler Paare: auf der Zuleitung von Lage 1, so weit innen wie die
+        Durchkontaktierung am Spulenende der Nachbarspule (dl_t) – sonst kämen sich die beiden zu nahe."""
+        return self.pt(self.r_v, self.dl_t)
 
     def fits(self, N):
         if self.r1 + 2 * self.w >= self.r2:
@@ -274,7 +293,9 @@ def evaluate(geo, N, p, oz):
     n, nc = geo.n, geo.nc
     L, S = geo.coil_sums(N)
     ts = layer_thickness(n, oz, p.inner_oz)
-    r_coil = sum(RHO_CU * L / (geo.w * t) * 1e3 for t in ts)
+    # Lagenpaar = Lauf nach innen + zurück nach außen; je Gruppe `par` Paare parallel, Gruppen in Reihe
+    r_pair = [RHO_CU * L / geo.w * (1 / ts[2 * j] + 1 / ts[2 * j + 1]) * 1e3 for j in range(n // 2)]
+    r_coil = sum(1 / sum(1 / r for r in r_pair[k * geo.par:(k + 1) * geo.par]) for k in range(geo.ns))
     t_o = oz * OZ_MM
     if p.boards == 3:
         # je Phase eine Platine: alle Spulen in Reihe, benachbarte gegensinnig, Spulenweite = Polteilung
@@ -289,9 +310,9 @@ def evaluate(geo, N, p, oz):
     r_phase = m * r_coil + RHO_CU * 1e3 * (ring_len / (geo.wr * t_o) + stub_len / (geo.w * t_o))
     r_ll = 2 * r_phase
     b1, b = flux(p, poles, (geo.r1 + geo.r2) / 2, p.board_t)
-    kt = 2 * m * kw * b * n * S * 1e-6  # S je Lage, alle Lagen tragen
+    kt = 2 * m * kw * b * (2 * geo.ns) * S * 1e-6  # S je Lage; parallele Paare teilen sich den Strom
     area = math.pi * ((p.outer_d / 2) ** 2 - (p.inner_d / 2) ** 2) * 1e-6
-    p_cont = H_AIR * 2 * area * p.max_rise * max(1, p.boards)  # jede Platine kühlt über beide Seiten
+    p_cont = p.h_air * 2 * area * p.max_rise * max(1, p.boards)  # jede Platine kühlt über beide Seiten
     # Dauerstrom: Kupferverlust (warm) höchstens p_cont, und nie mehr als U/R im Stillstand.
     # Mechanische Leistung P = I · (U − I · R_warm) (Gegenspannung = Rest der Spannung), größte bei I = U / 2R.
     v = p.voltage_v
@@ -309,11 +330,11 @@ def evaluate(geo, N, p, oz):
     d = Design(p, n, nc, oz, N, geo.w, geo.s, geo.r1, geo)
     d.r_coil, d.r_phase, d.r_ll = r_coil, r_phase, r_ll
     d.current, d.limited, d.kt, d.torque = current, limited, kt, kt * current
-    d.p_cu, d.rise = p_cu, p_cu / (H_AIR * 2 * area)
+    d.p_cu = p_cu
     d.p_cont, d.i_max, d.r_hot, d.p_max, d.capped = p_cont, i_max, r_hot, p_max, capped
     d.p_mech = current * (v - current * r_hot)
     d.b1, d.b = b1, b
-    d.rise = p_cu / (H_AIR * 2 * area * max(1, p.boards))
+    d.rise = p_cu / (p.h_air * 2 * area * max(1, p.boards))
     return d
 
 
@@ -398,12 +419,12 @@ def _candidates(p, only=None):
             if worse >= 2 and only is None:
                 break
             start = len(out)
-            for io in inner_choices(p, n, oz):
-                pn = replace(p, inner_oz=io)
+            for io, par in ((io, par) for io in inner_choices(p, n, oz) for par in parallel_choices(p, n)):
+                pn = replace(p, inner_oz=io, parallel=par)
                 pn = replace(pn, board_t=board_thickness(pn, n, oz))
                 w_min, s = rules(pn, n, oz)
                 for nc in coils:
-                    if only is not None and (n, oz, io, nc) not in only:
+                    if only is not None and (n, oz, io, nc, par) not in only:
                         continue
                     g = Geo(pn, n, nc, w_min, s, r1_min)
                     span = g.r2 - r1_min
@@ -428,7 +449,15 @@ def _candidates(p, only=None):
 
 
 def key_of(d):
-    return (d.layers, d.outer_oz, d.p.inner_oz, d.coils)
+    return (d.layers, d.outer_oz, d.p.inner_oz, d.coils, d.geo.par)
+
+
+def parallel_choices(p, n):
+    """Wie viele Lagenpaare je Gruppe parallel: Teiler der Paarzahl (automatisch alle, sonst die Vorgabe)."""
+    pairs = n // 2
+    if p.parallel:
+        return (p.parallel,) if pairs % p.parallel == 0 else (1,)
+    return tuple(k for k in range(1, pairs + 1) if pairs % k == 0)
 
 
 def cost(d):

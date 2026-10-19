@@ -32,6 +32,10 @@ CASES = [
     dict(boards=3, coils=8, layers=2),
     dict(boards=3, coils=14, layers=4, outer_oz=2.0),
     dict(outer_d=250, inner_d=80, voltage_v=48, max_rpm=350, boards=3),
+    # Lagenpaare parallel
+    dict(boards=3, coils=8, layers=8, parallel=4, outer_oz=2.0),
+    dict(boards=3, coils=8, layers=8, parallel=2, outer_oz=2.0),
+    dict(boards=1, coils=12, layers=6, parallel=3, outer_oz=2.0),
 ]
 
 
@@ -111,6 +115,27 @@ class Design(unittest.TestCase):
         three = run(Params(boards=3, **base))[0]
         self.assertGreater(three.torque, 2 * one.torque)
         self.assertGreater(three.p_mech, 2 * one.p_mech)
+
+    def test_parallel_layers(self):
+        """Parallele Paare: gleiche Windungszahl je Spule, aber weniger Widerstand → mehr Leistung."""
+        base = dict(outer_d=80, inner_d=10, voltage_v=24, boards=3, coils=8, layers=8, outer_oz=2.0)
+        ser = run(Params(parallel=1, **base))[0]
+        par = run(Params(parallel=4, **base))[0]
+        self.assertEqual((ser.geo.ns, par.geo.ns, par.geo.par), (4, 1, 4))
+        self.assertGreater(par.p_mech, ser.p_mech)
+        # mehr Lagen bringen jetzt mehr (automatisch geschaltet)
+        two = run(Params(outer_d=80, inner_d=10, voltage_v=24, layers=2))[0]
+        eight = run(Params(outer_d=80, inner_d=10, voltage_v=24, layers=8))[0]
+        self.assertGreater(eight.p_mech, two.p_mech)
+
+    def test_cooling(self):
+        """Bessere Kühlung → mehr Dauerleistung, Erwärmung bleibt in der Grenze."""
+        base = dict(outer_d=80, inner_d=10, voltage_v=24, layers=4)
+        still = run(Params(h_air=12, **base))[0]
+        wind = run(Params(h_air=50, **base))[0]
+        self.assertGreater(wind.p_mech, 1.5 * still.p_mech)
+        self.assertLessEqual(wind.rise, wind.p.max_rise + 1e-6)
+        self.assertIn('Fahrtwind', run(Params(h_air=50, **base))[2])
 
     def test_flux(self):
         p = Params()
