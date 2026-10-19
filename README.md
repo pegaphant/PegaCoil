@@ -3,8 +3,8 @@
 Fusion-360-Add-in, das die **Stator-Leiterplatte eines PCB-Motors** auslegt: 3-phasiger Axialfluss-Motor,
 die Spulen sind Leiterbahnen auf mehreren Lagen, der Rotor trägt die Magnete.
 
-Du gibst vor: **Außen- und Innendurchmesser, Leistung, Spannung** – optional Lagen, Spulenzahl und Kupferdicke
-(sonst automatisch). PegaCoil rechnet Spulenzahl, Windungen, Bahnbreite, Widerstand, Strom, Drehmoment,
+Du gibst vor: **Außen- und Innendurchmesser und Spannung** – optional Leistung, Lagen, Spulenzahl und Kupferdicke
+(sonst automatisch). Bei jeder Änderung zeigt das Fenster sofort, wie viel Watt auf diese Größe passen. PegaCoil rechnet Spulenzahl, Windungen, Bahnbreite, Widerstand, Strom, Drehmoment,
 Leerlaufdrehzahl, Erwärmung und die passenden Magnete aus, zeichnet die Lagen in Fusion und speichert eine
 **KiCad-Platine** (daraus in KiCad die Gerber-Dateien für die Fertigung).
 
@@ -15,13 +15,23 @@ Leerlaufdrehzahl, Erwärmung und die passenden Magnete aus, zeichnet die Lagen i
 2. In der Liste **PegaCoil** ausführen (Häkchen „Beim Start ausführen“ setzen).
 3. Der Knopf **PegaCoil** liegt unter *Dienstprogramme → Zusatzmodule*.
 
+## Updates
+
+PegaCoil schaut bei jedem Fusion-Start im Hintergrund auf GitHub nach einer neuen Version und holt sie selbst
+(der Add-in-Ordner ist ein git-Klon von `pegaphant/PegaCoil`). Lokale Änderungen werden nie überschrieben – dann
+wird nur angezeigt, dass es eine neue Version gibt. Oben im Fenster steht die Version (Datum des letzten Commits)
+und der Stand; Rechnung und Export laufen nach einem Update sofort mit dem neuen Stand, Änderungen am Fenster
+selbst nach dem nächsten Fusion-Neustart.
+
 ## Bedienung
 
-1. Maße, Leistung (W) und Spannung (V) eingeben, **Berechnen** drücken – das Ergebnis erscheint im Fenster,
-   samt Vergleich der Lagenzahlen.
-2. **OK**: zeichnet die Platine in Fusion (eigene Komponente, eine Skizze je Lage mit den Bahnmitten) und speichert
-   auf Wunsch die `.kicad_pcb` und einen Bericht `_Auslegung.txt`.
-3. In KiCad öffnen → *Datei → Fertigungsdateien → Gerber* (Lagen F.Cu, In*.Cu, B.Cu, Masken, Edge.Cuts) und Bohrdatei.
+1. Maße, Spannung und Lagen eingeben – alles rechnet sofort mit (Enter/Tab übernimmt einen Wert):
+   - **Größe/Lagen/Spannung geändert** → im Feld *Motorleistung* steht, was diese Platine dauerhaft an der Welle
+     schafft; darunter Aufnahme (W, A), Drehmoment, Drehzahl und das ganze Ergebnis.
+   - **Motorleistung geändert** → der Außendurchmesser stellt sich auf die kleinste passende Größe ein.
+2. **OK**: die Platine wird als **EAGLE-Platine** (`.brd`) ins aktive Fusion-Projekt (Ordner *PegaCoil*) geladen und
+   in **Fusion Electronics** als PCB geöffnet – dort *CAM-Prozessor → Gerber*. Optional zusätzlich 3D-Skizzen ins
+   aktuelle Design (geht auch in „Part Design“-Dokumenten) und eine KiCad-Datei.
 
 ## Wie gerechnet wird
 
@@ -30,24 +40,32 @@ Leerlaufdrehzahl, Erwärmung und die passenden Magnete aus, zeichnet die Lagen i
 - **Spule**: Sektor-Spirale, Lagen 1, 3, 5 … nach innen, 2, 4, 6 … gespiegelt wieder nach außen
   (Strom kreist überall gleich herum). Lagenpaare über Durchkontaktierungen in der Spulenmitte bzw. in einer
   Reihe über der Spule verbunden. Die Phasen sind außen über Bögen auf der Unterseite verkettet.
-- **Fertigungsregeln** (vorsichtig, JLCPCB-tauglich): 1 oz → 0,127 / 0,127 mm, 2 oz → 0,2 / 0,2 mm,
-  Via 0,3 / 0,6 mm. Innenlagen standardmäßig 0,5 oz (Vorgabe bei 4/6/8 Lagen).
-- **Auslegung**: Ziel-Widerstand zwischen zwei Anschlüssen = U² / P (Anlaufstrom = P / U). Für jede Kombination aus
-  Lagen, Kupfer, Spulenzahl und Innenradius sucht PegaCoil die Windungszahl mit der breitesten passenden Bahn und
-  nimmt die mit dem größten Anlaufmoment. Ist der Widerstand kleiner als das Ziel, muss der Treiber den Strom
-  begrenzen (wird angezeigt).
-- **Automatisch** = die günstigste Variante (Lagen, 2 oz kostet extra) mit mindestens 80 % des besten Drehmoments.
+- **Kupfer** bis 13 oz (Heavy Copper, z. B. PCBWay). Mindestbahn/-abstand je Dicke (vorsichtig angenommen):
+  1 oz 0,127 · 2 oz 0,2 · 3 oz 0,25 · 4 oz 0,3 · 6 oz 0,4 · 8 oz 0,5 · 10 oz 0,6 · 13 oz 0,75 mm – vor der Bestellung
+  mit den Fertigerregeln abgleichen (überschreibbar unter *Erweitert*). Die Platine wird bei viel Kupfer dicker
+  (Kupfer + 0,2 mm Isolierung je Lagenabstand). Innenkupfer automatisch so dick wie außen (höchstens 6 oz):
+  die Lagen einer Spule liegen in Reihe, dünnes Innenkupfer kostet viel Widerstand. Via 0,3 / 0,6 mm.
+- **Dauerstrom**: höchstens so viel, dass die Kupferverluste (warm) die Platine um höchstens *Max. Erwärmung*
+  (40 K) erwärmen, und nie mehr als U / R.
+- **Motorleistung** (an der Welle) = I · (U − I · R_warm) = Drehmoment × Drehzahl unter Last;
+  **Aufnahme** = U · I (Differenz = Wärme im Kupfer).
+- **Auslegung**: Für jede Kombination aus Lagen, Kupfer, Spulenzahl und Innenradius sucht PegaCoil die Windungszahl
+  mit der breitesten passenden Bahn: zuerst die, die die gewünschte Leistung dauerhaft schafft, dann das größte
+  Drehmoment. An der Wärmegrenze ist das Drehmoment fast unabhängig von der Windungszahl – weniger Windungen heißt
+  mehr Strom und Drehzahl, also mehr Watt („höchstens … W“, begrenzt durch *Max. Leerlaufdrehzahl*, 10 000 U/min).
+  Ist der Widerstand kleiner als U / Dauerstrom, muss der Treiber den Strom begrenzen (wird angezeigt).
+- **Automatisch** = die Variante mit der höchsten Dauerleistung an der Welle (Lagen und Kupfer werden durchprobiert);
+  schaffen mehrere die Leistung, die günstigste mit mindestens 80 % des besten Drehmoments.
 - **Drehmoment** (Schätzung): Kt = 2 · (Spulen/3) · 0,866 · B · Σ (r_außen² − r_innen²) aller radialen Leiter.
   B = Flussdichte im Luftspalt (Vorgabe 0,3 T: N52-Magnete, ~1 mm Spalt, mit Rückschluss eher 0,4–0,5 T).
-- **Wärme**: ruhende Luft, beide Seiten, h ≈ 12 W/(m²·K). Die angegebene Leistung fällt beim Anlauf komplett als
-  Wärme an – Dauerleistung steht im Ergebnis.
+- **Wärme**: ruhende Luft, beide Seiten, h ≈ 12 W/(m²·K).
 - **Abstandsprüfung**: eigene Prüfung jeder Lage (auch zwischen Windungen derselben Spule – KiCad sieht das nicht,
   weil eine Spule ein Netz ist).
 
 ## Ohne Fusion
 
 ```
-python -m pegacoil --od 60 --id 10 --power 10 --volt 12 --out stator.kicad_pcb
+python -m pegacoil --od 60 --id 10 --volt 12 --out stator.kicad_pcb   # --power 0 = automatisch
 python -m unittest discover tests
 ```
 

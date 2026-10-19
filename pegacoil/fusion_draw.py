@@ -19,9 +19,11 @@ def draw(design, layout, one_coil=False, body=True):
     d = layout.design
     g, p = d.geo, d.p
     root = design.rootComponent
-    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-    comp = occ.component
-    comp.name = f'PegaCoil Ø{p.outer_d:g}-Ø{p.inner_d:g} {d.coils}S{d.poles}P {g.n}L'
+    try:
+        comp = root.occurrences.addNewComponent(adsk.core.Matrix3D.create()).component
+        comp.name = f'PegaCoil Ø{p.outer_d:g}-Ø{p.inner_d:g} {d.coils}S{d.poles}P {g.n}L'
+    except RuntimeError:
+        comp = root  # „Part Design“-Dokument: nur eine Komponente erlaubt → direkt in die Hauptkomponente
     t = p.board_t * CM
 
     if body:
@@ -69,4 +71,5 @@ def draw(design, layout, one_coil=False, body=True):
         for pad in layout.pads:
             circles.addByCenterRadius(_p3((pad.x, pad.y)), g.pad_r * CM)
         sk.isComputeDeferred = False
+        sk.arePointsShown = False  # sonst je Bahnende ein weißer Punkt
     return comp

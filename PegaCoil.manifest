@@ -4,9 +4,9 @@
   "id": "7c3f2a91-5d4e-4b8a-9f61-2e0c8d7b4a55",
   "author": "Thomas (pegaphant)",
   "description": {
-    "": "PegaCoil – Stator-Leiterplatten für PCB-Motoren auslegen, zeichnen und als KiCad-Platine exportieren"
+    "": "PegaCoil – Stator-Leiterplatten für PCB-Motoren auslegen und als PCB in Fusion Electronics öffnen; aktualisiert sich selbst von GitHub"
   },
-  "version": "0.1.0",
+  "version": "0.2.0",
   "runOnStartup": true,
   "supportedOS": "windows|mac",
   "editEnabled": true

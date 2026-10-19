@@ -42,7 +42,10 @@ def _cross(o, a, b):
 def seg_dist(a, b, c, d):
     d1, d2 = _cross(c, d, a), _cross(c, d, b)
     d3, d4 = _cross(a, b, c), _cross(a, b, d)
-    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and d1 and d2 and d3 and d4:
+    # Echte Kreuzung nur bei deutlichen Vorzeichen – Strecken auf einer Geraden liefern sonst
+    # Rundungsrauschen mit wechselndem Vorzeichen und würden als Kreuzung gelten.
+    eps = 1e-9 * (math.dist(a, b) * math.dist(c, d) + 1e-12)
+    if min(abs(d1), abs(d2), abs(d3), abs(d4)) > eps and (d1 > 0) != (d2 > 0) and (d3 > 0) != (d4 > 0):
         return 0.0
     return min(_pseg(a, c, d), _pseg(b, c, d), _pseg(c, a, b), _pseg(d, a, b))
 

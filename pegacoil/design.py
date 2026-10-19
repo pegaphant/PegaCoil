@@ -15,8 +15,9 @@ alle Spulen einer Phase in Reihe. Anschlüsse U1/U2, V1/V2, W1/W2 als Lötpads a
 Stern oder Dreieck wird beim Anlöten gewählt.
 """
 
+import copy
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 RHO_CU = 1.72e-8  # Ohm·m bei 20 °C
 ALPHA_CU = 0.00393  # 1/K
@@ -27,7 +28,12 @@ EDGE_PAD = 0.5  # Pad-Kupfer bis Außenkante
 VIA_AMPS = 1.0  # grobe Belastbarkeit einer 0,3-mm-Durchkontaktierung
 COIL_CHOICES = (3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 36)
 LAYER_CHOICES = (2, 4, 6, 8)
-OZ_CHOICES = (1.0, 2.0)
+OZ_CHOICES = (1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 13.0)  # PCBWay: Heavy Copper bis 13 oz
+INNER_OZ_CHOICES = (0.5, 1.0, 2.0, 3.0, 4.0, 6.0)
+# Kleinste Bahnbreite/Abstand je Kupferdicke (vorsichtig; Heavy Copper braucht deutlich mehr Abstand).
+# Vor der Bestellung mit den aktuellen Fertigerregeln vergleichen – überschreibbar über min_trace/min_space.
+COPPER_RULES = ((1.0, 0.127), (2.0, 0.2), (3.0, 0.25), (4.0, 0.3), (6.0, 0.4), (8.0, 0.5), (10.0, 0.6), (13.0, 0.75))
+DIELECTRIC = 0.2  # mm Mindest-Isolierung zwischen zwei Kupferlagen
 PHASES = ('U', 'V', 'W')
 
 
@@ -35,14 +41,15 @@ PHASES = ('U', 'V', 'W')
 class Params:
     outer_d: float = 60.0
     inner_d: float = 10.0
-    power_w: float = 10.0
+    power_w: float = 0.0  # W mechanische Dauerleistung, 0 = so viel, wie die Platine dauerhaft schafft
     voltage_v: float = 12.0
     layers: int = 0  # 0 = automatisch
     coils: int = 0  # 0 = automatisch
     outer_oz: float = 0.0  # 0 = automatisch (1 oder 2 oz)
-    inner_oz: float = 0.5
+    inner_oz: float = 0.0  # 0 = automatisch (0,5 oder 1 oz)
     b_gap: float = 0.3  # T, Flussdichte im Luftspalt
     max_rise: float = 40.0  # K, zulässige Erwärmung der Platine
+    max_rpm: float = 10000.0  # U/min, höchste Leerlaufdrehzahl (sonst nur Watt durch Drehzahl)
     min_trace: float = 0.0  # 0 = nach Kupferdicke
     min_space: float = 0.0
     via_drill: float = 0.3
@@ -54,10 +61,16 @@ class Params:
 
 
 def rules(p, layers, outer_oz):
-    """Kleinste Bahnbreite und Abstand (Fertigerregeln wie JLCPCB, etwas vorsichtig)."""
+    """Kleinste Bahnbreite und Abstand – alle Lagen haben dasselbe Muster, die dickste Lage bestimmt."""
     oz = max(outer_oz, p.inner_oz if layers > 2 else 0.0)
-    auto = 0.2 if oz > 1.0 else 0.127
+    auto = next(v for o, v in COPPER_RULES if oz <= o + 1e-9) if oz <= COPPER_RULES[-1][0] else COPPER_RULES[-1][1]
     return (p.min_trace or auto), (p.min_space or auto)
+
+
+def board_thickness(p, layers, outer_oz):
+    """Platinendicke: Vorgabe, aber mindestens Kupfer + Isolierung zwischen den Lagen."""
+    cu = sum(layer_thickness(layers, outer_oz, p.inner_oz))
+    return max(p.board_t, round(cu + (layers - 1) * DIELECTRIC + 0.05, 1))
 
 
 def layer_thickness(n, outer_oz, inner_oz):
@@ -77,20 +90,24 @@ class Geo:
         self.sin, self.cos = math.sin(self.phi), math.cos(self.phi)
         self.pitch = w + s
         self.vr = p.via_pad / 2
+        self.vh = max(self.vr, w / 2)  # Kupfer um eine Durchkontaktierung (Bahnende ist breiter als das Pad)
         self.wr = max(w, 0.4)  # Breite der Verbindungsbögen
         self.pad_r = p.pad_d / 2
-        self.r_pad = p.outer_d / 2 - EDGE_PAD - self.pad_r
+        self.pad_h = max(self.pad_r, w / 2)  # Kupfer am Pad (breite Bahn ragt über das Pad)
+        self.r_pad = p.outer_d / 2 - EDGE_PAD - self.pad_h
         vr2 = max(self.vr, self.wr / 2)
         self.ring_step = self.wr / 2 + vr2 + s
-        top = self.r_pad - self.pad_r - s - vr2
+        top = self.r_pad - self.pad_h - s - vr2
         self.r_ring = [top - 2 * self.ring_step, top - self.ring_step, top]
-        self.r_v = self.r_ring[0] - vr2 - s - self.vr  # Reihe der äußeren Durchkontaktierungen
-        self.r_l = self.r_v - self.vr - s - w / 2  # Reihe der Übergangsleitungen
+        self.r_v = self.r_ring[0] - vr2 - s - self.vh  # Reihe der äußeren Durchkontaktierungen
+        self.r_l = self.r_v - self.vh - s - w / 2  # Reihe der Übergangsleitungen
         self.r2 = self.r_l - w / 2 - s  # Kupferkante außen
         self.dl0 = s / 2 + w / 2
         self.dl_t = self.dl0 + max(0.0, self.vr - w / 2)
-        self.dl_pad = self.pad_r + s / 2
-        self.via_sp = self.vr + max(self.vr, w / 2) + s
+        self.dl_pad = self.pad_h + s / 2
+        # Der Zug zur Durchkontaktierung j steht senkrecht auf der Spulenflanke und passiert j + 1 im
+        # Abstand via_sp · cos(phi).
+        self.via_sp = max(2 * self.vh + s, (self.vr + w / 2 + s) / self.cos)
 
     # --- Kontur k ---------------------------------------------------------
     def d(self, k):
@@ -121,7 +138,7 @@ class Geo:
         """Radien der inneren Durchkontaktierungen (oben zuerst) oder None."""
         if N < 1 or not self.contour_ok(N):
             return None
-        c = self.w / 2 + self.s + self.vr
+        c = self.w / 2 + self.s + self.vh
         hi = self.r2 - self.d(N - 1) - c
         lo = max(self.r1 + self.d(N - 1) + c, (self.dl(N) + c) / self.sin)
         nv = self.n // 2
@@ -139,9 +156,9 @@ class Geo:
         if self.r2 <= self.r1:
             return None
         t0 = -self.ang(self.r_v, self.dl_t)
-        step = 2 * math.asin(min(1.0, (2 * self.vr + self.s) / (2 * self.r_v)))
+        step = 2 * math.asin(min(1.0, (2 * self.vh + self.s) / (2 * self.r_v)))
         angs = [t0 + j * step for j in range(self.n // 2)]
-        clear = self.vr + self.w / 2 + self.s
+        clear = self.vh + self.w / 2 + self.s
         limit = self.ang(self.r_v, self.dl0) - 2 * math.asin(min(1.0, clear / (2 * self.r_v)))
         if angs[-1] > limit + 1e-12:
             return None
@@ -187,7 +204,28 @@ class Design:
     torque: float = 0.0  # Nm
     p_cu: float = 0.0
     rise: float = 0.0
-    p_cont: float = 0.0  # Dauerleistung bei max_rise
+    p_cont: float = 0.0  # zulässige Kupferverluste bei max_rise
+    i_max: float = 0.0  # A, höchster Dauerstrom (Erwärmung bzw. U/R)
+    r_hot: float = 0.0  # Ohm zwischen zwei Anschlüssen, warm (+max_rise)
+    p_max: float = 0.0  # W, höchste mechanische Dauerleistung dieser Auslegung
+    p_mech: float = 0.0  # W, mechanische Leistung im Betriebspunkt (Drehmoment × Drehzahl)
+    capped: bool = False  # gewünschte Leistung passt nicht → auf p_max begrenzt
+    p_top: float = 0.0  # W, höchste mechanische Dauerleistung aller Auslegungen dieser Größe
+    p_wanted: float = 0.0  # W, Vorgabe (0 = automatisch)
+
+    @property
+    def usable(self):
+        """Schafft die Vorgabe dauerhaft und dreht nicht unsinnig schnell."""
+        return not self.capped and self.rpm0 <= self.p.max_rpm
+
+    @property
+    def p_in(self):
+        return self.p.voltage_v * self.current
+
+    @property
+    def rpm(self):
+        """Drehzahl im Betriebspunkt (Dauerstrom)."""
+        return max(0.0, self.p.voltage_v - self.current * self.r_hot) / self.kt * 60 / (2 * math.pi) if self.kt > 0 else 0.0
 
     @property
     def poles(self):
@@ -209,29 +247,51 @@ def evaluate(geo, N, p, oz):
     stub_len = 2 * m * (geo.r_ring[1] - geo.r2) + 2 * (geo.r_pad - geo.r_ring[1])
     r_phase = m * r_coil + RHO_CU * 1e3 * (ring_len / (geo.wr * t_o) + stub_len / (geo.w * t_o))
     r_ll = 2 * r_phase
-    i_t = p.power_w / p.voltage_v
-    if r_ll >= p.voltage_v / i_t:
-        current, limited = p.voltage_v / r_ll, False
-    else:
-        current, limited = i_t, True
     kt = 2 * m * KW * p.b_gap * n * S * 1e-6  # S je Lage, alle Lagen tragen
     area = math.pi * ((p.outer_d / 2) ** 2 - (p.inner_d / 2) ** 2) * 1e-6
-    p_cu = current * current * r_ll
+    p_cont = H_AIR * 2 * area * p.max_rise
+    # Dauerstrom: Kupferverlust (warm) höchstens p_cont, und nie mehr als U/R im Stillstand.
+    # Mechanische Leistung P = I · (U − I · R_warm) (Gegenspannung = Rest der Spannung), größte bei I = U / 2R.
+    v = p.voltage_v
+    r_hot = r_ll * (1 + ALPHA_CU * p.max_rise)
+    i_max = min(math.sqrt(p_cont / r_hot), v / r_ll)
+    i_pk = min(i_max, v / (2 * r_hot))
+    p_max = i_pk * (v - i_pk * r_hot)
+    i_need = math.inf
+    if p.power_w > 0 and v * v >= 4 * r_hot * p.power_w:
+        i_need = (v - math.sqrt(v * v - 4 * r_hot * p.power_w)) / (2 * r_hot)
+    capped = p.power_w > 0 and i_need > i_pk * (1 + 1e-9)
+    current = i_pk if p.power_w <= 0 or capped else i_need
+    limited = i_max < v / r_ll * (1 - 1e-9)  # im Stillstand flösse mehr → Treiber begrenzt
+    p_cu = current * current * r_hot
     d = Design(p, n, nc, oz, N, geo.w, geo.s, geo.r1, geo)
     d.r_coil, d.r_phase, d.r_ll = r_coil, r_phase, r_ll
     d.current, d.limited, d.kt, d.torque = current, limited, kt, kt * current
     d.p_cu, d.rise = p_cu, p_cu / (H_AIR * 2 * area)
-    d.p_cont = H_AIR * 2 * area * p.max_rise
+    d.p_cont, d.i_max, d.r_hot, d.p_max, d.capped = p_cont, i_max, r_hot, p_max, capped
+    d.p_mech = current * (v - current * r_hot)
     return d
 
 
+def _better(d, best):
+    """Auslegungen, die die Vorgabe dauerhaft schaffen, zuerst; dann (automatisch) die größere Leistung bzw.
+    (Vorgabe) das größere Drehmoment."""
+    if best is None or d.usable != best.usable:
+        return best is None or d.usable
+    if d.p.power_w <= 0:  # automatisch: so viel Leistung wie möglich, bei Gleichstand mehr Drehmoment
+        if abs(d.p_max - best.p_max) > 1e-6 * max(best.p_max, 1e-9):
+            return d.p_max > best.p_max
+    return d.torque > best.torque * (1 + 1e-9)
+
+
 def best_for(p, n, oz, nc, r1, w_min, s):
-    best, worse = None, 0
+    best, worse, p_top = None, 0, 0.0
     for N in range(1, 500):
         if not Geo(p, n, nc, w_min, s, r1).fits(N):
             break
-        lo, hi = w_min, w_min + 4.0
-        for _ in range(14):
+        g0 = Geo(p, n, nc, w_min, s, r1)
+        lo, hi = w_min, max(w_min + 4.0, g0.r2 - r1)  # bei 1 Windung kann die Bahn fast die ganze Spule füllen
+        for _ in range(12):  # Spanne bis ~40 mm → 0,01 mm genau
             mid = (lo + hi) / 2
             if Geo(p, n, nc, mid, s, r1).fits(N):
                 lo = mid
@@ -239,42 +299,94 @@ def best_for(p, n, oz, nc, r1, w_min, s):
                 hi = mid
         w = max(w_min, math.floor(lo * 1000) / 1000)
         d = evaluate(Geo(p, n, nc, w, s, r1), N, p, oz)
-        if best is None or d.torque > best.torque * (1 + 1e-9):
+        if d.rpm0 <= p.max_rpm:
+            p_top = max(p_top, d.p_max)
+        if _better(d, best):
             best, worse = d, 0
         else:
             worse += 1
             if worse >= 3 and not d.limited:
                 break
+    if best:
+        best.p_top = p_top
     return best
 
 
-def candidates(p):
-    """Beste Auslegung je Kombination aus Lagen, Kupfer und Spulenzahl."""
+_cache = {}
+
+
+def candidates(p, only=None):
+    """Beste Auslegung je Kombination aus Lagen, Kupfer und Spulenzahl (zwischengespeichert – die Live-Anzeige
+    fragt dieselbe Größe mehrfach). `only`: nur diese Kombinationen (Lagen, außen, innen, Spulen)."""
+    key = repr(p) + repr(sorted(only) if only is not None else None)
+    if key not in _cache:
+        if len(_cache) > 64:
+            _cache.clear()
+        _cache[key] = _candidates(p, only)
+    return [copy.copy(d) for d in _cache[key]]
+
+
+def inner_choices(p, n, oz):
+    """Innenkupfer: automatisch so dick wie außen (höchstens 6 oz) – dickeres Innenkupfer bringt immer mehr
+    Leistung, die Innenlagen liegen in Reihe und führen den vollen Strom."""
+    if n <= 2:
+        return (INNER_OZ_CHOICES[0],)
+    if p.inner_oz:
+        return (p.inner_oz,)
+    return (max(c for c in INNER_OZ_CHOICES if c <= max(oz, INNER_OZ_CHOICES[0])),)
+
+
+def _candidates(p, only=None):
     out = []
     layers = (p.layers,) if p.layers else LAYER_CHOICES
     ozs = (p.outer_oz,) if p.outer_oz else OZ_CHOICES
     coils = (p.coils,) if p.coils else COIL_CHOICES
     r1_min = p.inner_d / 2 + p.edge_clear
     for n in layers:
+        top_n, worse = 0.0, 0
         for oz in ozs:
-            w_min, s = rules(p, n, oz)
-            for nc in coils:
-                g = Geo(p, n, nc, w_min, s, r1_min)
-                span = g.r2 - r1_min
-                if span <= 1.0:
-                    continue
-                best = None
-                for f in (0.0, 0.12, 0.25, 0.4):
-                    d = best_for(p, n, oz, nc, r1_min + f * span, w_min, s)
-                    if d and (best is None or d.torque > best.torque):
-                        best = d
-                if best:
-                    out.append(best)
+            # Kupfer automatisch: dicker hilft, bis der größere Mindestabstand überwiegt → nach zwei schlechteren
+            # Stufen aufhören
+            if worse >= 2 and only is None:
+                break
+            start = len(out)
+            for io in inner_choices(p, n, oz):
+                pn = replace(p, inner_oz=io)
+                pn = replace(pn, board_t=board_thickness(pn, n, oz))
+                w_min, s = rules(pn, n, oz)
+                for nc in coils:
+                    if only is not None and (n, oz, io, nc) not in only:
+                        continue
+                    g = Geo(pn, n, nc, w_min, s, r1_min)
+                    span = g.r2 - r1_min
+                    if span <= 1.0:
+                        continue
+                    best = None
+                    for f in (0.0, 0.15, 0.3):
+                        d = best_for(pn, n, oz, nc, r1_min + f * span, w_min, s)
+                        if d and _better(d, best):
+                            d.p_top = max(d.p_top, best.p_top if best else 0.0)
+                            best = d
+                        elif d:
+                            best.p_top = max(best.p_top, d.p_top)
+                    if best:
+                        out.append(best)
+            top_oz = max((d.p_top for d in out[start:]), default=0.0)
+            if top_oz > top_n:
+                top_n, worse = top_oz, 0
+            else:
+                worse += 1
     return out
 
 
+def key_of(d):
+    return (d.layers, d.outer_oz, d.p.inner_oz, d.coils)
+
+
 def cost(d):
-    return d.layers + (1.5 if d.outer_oz > 1 else 0.0)
+    """Grobe Kosten: Lagen, Heavy Copper außen und innen."""
+    inner = (d.layers - 2) * 0.3 * max(0.0, d.p.inner_oz - 0.5) if d.layers > 2 else 0.0
+    return d.layers + 0.75 * max(0.0, d.outer_oz - 1.0) + inner
 
 
 def choose(results, share=0.8):
@@ -290,10 +402,105 @@ def optimize(p):
     """(gewählte Auslegung, alle Kandidaten). Wirft ValueError bei unmöglichen Vorgaben."""
     if p.outer_d <= p.inner_d + 10:
         raise ValueError('Außendurchmesser muss mindestens 10 mm größer sein als der Innendurchmesser.')
-    if p.power_w <= 0 or p.voltage_v <= 0:
-        raise ValueError('Leistung und Spannung müssen größer als 0 sein.')
-    results = candidates(p)
-    best = choose(results)
-    if best is None:
+    if p.power_w < 0 or p.voltage_v <= 0:
+        raise ValueError('Spannung muss größer als 0 sein, Leistung mindestens 0 (= maximal möglich).')
+    # Vergleich: jede Variante bei ihrem eigenen Maximum (Leistung automatisch)
+    compare = candidates(replace(p, power_w=0.0))
+    if not compare:
         raise ValueError('Keine Spule passt auf die Ringfläche – Platine größer oder Innendurchmesser kleiner wählen.')
-    return best, results
+    p_top = max(r.p_top for r in compare)
+    target = p.power_w if 0 < p.power_w <= p_top else p_top * 0.999  # automatisch bzw. zu viel → das Mögliche
+    # nur die Varianten nachrechnen, die die Zielleistung überhaupt schaffen
+    only = {key_of(r) for r in compare if r.p_top >= target * 0.999}
+    results = candidates(replace(p, power_w=target), only)
+    best = choose([r for r in results if r.usable] or results)
+    best.p_top, best.p_wanted = p_top, p.power_w
+    return best, [r for r in compare if r.usable] or compare
+
+
+def top_power(p):
+    """Höchste mechanische Dauerleistung (W) auf dieser Größe (0, wenn nichts passt)."""
+    if p.outer_d <= p.inner_d + 10:
+        return 0.0
+    return max((r.p_top for r in candidates(replace(p, power_w=0.0))), default=0.0)
+
+
+def size_for_power(p, target, od_max=400.0):
+    """Kleinster Außendurchmesser (ganze mm), auf dem `target` W dauerhaft möglich sind.
+    (Außendurchmesser, mögliche W) – passt es auch auf od_max nicht, kommt od_max zurück."""
+    lo_lim = math.ceil(p.inner_d + 11)
+    memo = {}
+    # Suche mit Lagen und Kupfer der aktuellen besten Auslegung (sonst je Schritt die volle Suche über alle
+    # Kupferdicken); am Ende wird ohnehin wieder voll ausgelegt und kann nur besser werden.
+    # Lagen/Kupfer an der geschätzten Zielgröße festlegen (Leistung wächst etwa mit der Fläche).
+    od_est = min(max(p.outer_d, lo_lim), od_max)
+    for _ in range(3):
+        top0 = top_power(replace(p, outer_d=float(od_est)))
+        if top0 <= 0:
+            od_est = min(od_max, od_est * 1.5)
+            continue
+        od_est = min(max(lo_lim, round(od_est * math.sqrt(target / top0))), od_max)
+        break
+    try:
+        d0 = optimize(replace(p, outer_d=float(od_est), power_w=0.0))[0]
+        fixed = replace(p, layers=d0.layers, outer_oz=d0.outer_oz, inner_oz=d0.p.inner_oz)
+    except ValueError:
+        fixed = p
+
+    def top(od):
+        if od not in memo:
+            try:
+                memo[od] = top_power(replace(fixed, outer_d=float(od)))
+            except ValueError:
+                memo[od] = 0.0
+        return memo[od]
+
+    od_max = int(od_max)
+    od = int(od_est)
+    if top(od) >= target:
+        hi = od
+        lo = lo_lim - 1
+        while hi > lo_lim:
+            guess = int(hi * math.sqrt(target / top(hi))) if top(hi) > 0 else hi - 1
+            guess = max(lo_lim, min(hi - 1, guess))
+            if top(guess) >= target:
+                hi = guess
+            else:
+                lo = guess
+                break
+    else:
+        lo = od
+        hi = None
+        while hi is None:
+            v = top(lo)
+            guess = int(lo * math.sqrt(target / v)) + 1 if v > 0 else int(lo * 1.5)
+            guess = min(od_max, max(lo + 1, guess))
+            if top(guess) >= target:
+                hi = guess
+            elif guess >= od_max:
+                return od_max, top(od_max)
+            else:
+                lo = guess
+    while hi - lo > 1:  # Bisektion auf 1 mm (feste Variante → schnell, liefert eine sichere Obergrenze)
+        mid = (lo + hi) // 2
+        if top(mid) >= target:
+            hi = mid
+        else:
+            lo = mid
+    # Mit voller Suche (alle Lagen/Kupfer) nach unten nachschärfen – die beste Variante wechselt je Größe
+    full = {}
+
+    def top_full(od):
+        if od not in full:
+            full[od] = top_power(replace(p, outer_d=float(od)))
+        return full[od]
+
+    lo = max(lo_lim - 1, int(hi * 0.7))
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if top_full(mid) >= target:
+            hi = mid
+        else:
+            lo = mid
+    return float(hi), max(top(hi) if hi in memo else 0.0, full.get(hi, 0.0))
+
