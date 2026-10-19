@@ -15,6 +15,14 @@ Leerlaufdrehzahl, Erwärmung und die passenden Magnete aus, zeichnet die Lagen i
 2. In der Liste **PegaCoil** ausführen (Häkchen „Beim Start ausführen“ setzen).
 3. Der Knopf **PegaCoil** liegt unter *Dienstprogramme → Zusatzmodule*.
 
+## Roboter-Antriebe
+
+Vorgabe ist eine **Nenndrehzahl** (z. B. 1500 U/min): PegaCoil sucht das größte **Dauer-Drehmoment** bei dieser
+Drehzahl (Spannung muss die Gegenspannung bei der Nenndrehzahl noch überwinden) und nennt das **Spitzenmoment**
+(Strom U/R im Stillstand, nur Sekunden – der Treiber begrenzt meist darunter). PCB-Motoren haben kein Rastmoment
+und laufen dadurch völlig ruckfrei. Nenndrehzahl 0 = höchste Leistung (mit Mindestwirkungsgrad, Vorgabe 80 %).
+Gerechnet wird im Hintergrund – das Fenster bleibt bedienbar, nur die letzte Eingabe zählt.
+
 ## Updates
 
 PegaCoil schaut bei jedem Fusion-Start im Hintergrund auf GitHub nach einer neuen Version und holt sie selbst
@@ -77,7 +85,8 @@ Farben: rot = ↑ axial / N oben, blau = ↓ axial / S oben, gelb = tangential (
   wird mitgesucht. Gerechnet wird mit dem Mittel 2/π · B1.
 - **Drehmoment**: Kt = 2 · m · k_w · B · Σ (r_außen² − r_innen²) aller radialen Leiter (m Spulen je Phase).
 - **Wärme**: Wärmeübergang je Platinenseite nach *Kühlung*: ruhende Luft 12, drehende Rotorscheiben 25,
-  Fahrtwind 50, Lüfter 80 W/(m²·K) (Richtwerte). Zulässiger Kupferverlust = h · 2 · Fläche · Erwärmung je Platine.
+  Fahrtwind 50, Lüfter 80, Öl ruhend 100, Öl umgewälzt 300 W/(m²·K) (Richtwerte; Öl: Planschverluste nicht
+  gerechnet, Wärme muss übers Gehäuse weg). Zulässiger Kupferverlust = h · 2 · Fläche · Erwärmung je Platine.
 - **Lagen** werden in Gruppen geschaltet: Paare einer Gruppe parallel, Gruppen in Reihe (automatisch die beste
   Aufteilung). Parallel = mehr Querschnitt bei gleicher Windungszahl; sonst brächten mehr Lagen nur mehr Windungen.
 - **Abstandsprüfung**: eigene Prüfung jeder Lage (auch zwischen Windungen derselben Spule – KiCad sieht das nicht,

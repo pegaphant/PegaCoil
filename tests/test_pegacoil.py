@@ -137,6 +137,23 @@ class Design(unittest.TestCase):
         self.assertLessEqual(wind.rise, wind.p.max_rise + 1e-6)
         self.assertIn('Fahrtwind', run(Params(h_air=50, **base))[2])
 
+    def test_robot_speed(self):
+        """Nenndrehzahl: größtes Dauer-Drehmoment bei dieser Drehzahl, Spannung reicht, Spitze > Dauer."""
+        d, *_ = run(Params(outer_d=80, inner_d=15, voltage_v=24, speed=1500))
+        w = 1500 * 2 * math.pi / 60
+        self.assertAlmostEqual(d.p_mech, d.torque * w, delta=1e-6 * d.p_mech)
+        self.assertGreaterEqual(d.rpm0, 1500)
+        self.assertLessEqual(d.current * d.r_hot + d.kt * w, d.p.voltage_v * (1 + 1e-9))
+        self.assertGreater(d.torque_peak, 2 * d.torque)
+        self.assertLessEqual(d.rise, d.p.max_rise + 1e-6)
+        slow = run(Params(outer_d=80, inner_d=15, voltage_v=24, speed=500))[0]
+        self.assertGreater(slow.torque, 0.8 * d.torque)
+
+    def test_min_efficiency(self):
+        """Ohne Nenndrehzahl begrenzt der Mindestwirkungsgrad den Strom (sonst bei Öl ~50 %)."""
+        d, *_ = run(Params(outer_d=100, inner_d=20, voltage_v=48, speed=0, h_air=300, min_eff=0.8))
+        self.assertGreaterEqual(d.p_mech / d.p_in, 0.8 - 1e-6)
+
     def test_flux(self):
         p = Params()
         b_5 = flux(p, 8, 15, 1.6)[0]

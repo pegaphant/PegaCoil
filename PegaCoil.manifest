@@ -6,7 +6,7 @@
   "description": {
     "": "PegaCoil – Stator-Leiterplatten für PCB-Motoren auslegen und als PCB in Fusion Electronics öffnen; aktualisiert sich selbst von GitHub"
   },
-  "version": "0.4.0",
+  "version": "0.5.0",
   "runOnStartup": true,
   "supportedOS": "windows|mac",
   "editEnabled": true

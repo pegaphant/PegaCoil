@@ -22,11 +22,14 @@ def main():
     ap.add_argument('--rotor', default='halbach', choices=('halbach', 'iron'))
     ap.add_argument('--magnet', default='N52')
     ap.add_argument('--hm', type=float, default=5.0, help='Magnetdicke mm')
-    ap.add_argument('--rpm', type=float, default=10000, help='höchste Leerlaufdrehzahl')
+    ap.add_argument('--rpm', type=float, default=10000, help='höchste Leerlaufdrehzahl (ohne Nenndrehzahl)')
+    ap.add_argument('--speed', type=float, default=1500, help='Nenndrehzahl U/min (0 = höchste Leistung)')
+    ap.add_argument('--h', type=float, default=12, help='Wärmeübergang W/m²K (Kühlung)')
     ap.add_argument('--out', help='KiCad-Datei schreiben')
     a = ap.parse_args()
     p = Params(a.od, a.id, a.power, a.volt, a.layers, a.coils, a.oz, a.inner_oz, a.b, max_rpm=a.rpm,
-               boards=a.boards, rotor=a.rotor, magnet=a.magnet, magnet_h=a.hm)
+               boards=a.boards, rotor=a.rotor, magnet=a.magnet, magnet_h=a.hm,
+               speed=a.speed, h_air=a.h)
     t = time.time()
     d, lay, text, errors = run(p)
     print(text)

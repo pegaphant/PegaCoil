@@ -2,7 +2,7 @@
 
 import math
 
-from .design import ALPHA_CU, COOLING, HALBACH_SEGMENTS, MAGNETS, VIA_AMPS, _better, layer_thickness
+from .design import ALPHA_CU, COOLING, HALBACH_SEGMENTS, OIL, MAGNETS, VIA_AMPS, _better, layer_thickness
 from .rotor import IRON_T, stack
 
 
@@ -27,10 +27,16 @@ def summary(d, results=None, r_exact=None):
     hot = 1 + ALPHA_CU * p.max_rise
     r_m = (g.r1 + g.r2) / 2
     pitch = 2 * math.pi * r_m / d.poles
-    mot = (
-        f'Motorleistung (mechanisch, dauerhaft): ca. {_n(d.p_mech, 1)} W'
-        f' – {torque_text(d.torque)} bei {_n(d.rpm, 0)} U/min ({_n(p.voltage_v, 1)} V)'
-    )
+    if p.speed > 0:
+        mot = (f'Dauer-Drehmoment: {torque_text(d.torque)} bei {_n(p.speed, 0)} U/min'
+               f' ({_n(d.p_mech, 1)} W an der Welle, {_n(p.voltage_v, 1)} V)\n'
+               f'Spitzenmoment: {torque_text(d.torque_peak)} kurzzeitig ({_n(d.i_peak, 0)} A = U/R im Stillstand,'
+               ' nur Sekunden – Treiber begrenzt meist darunter)')
+    else:
+        mot = (
+            f'Motorleistung (mechanisch, dauerhaft): ca. {_n(d.p_mech, 1)} W'
+            f' – {torque_text(d.torque)} bei {_n(d.rpm, 0)} U/min ({_n(p.voltage_v, 1)} V)'
+        )
     if d.p_wanted <= 0:
         head = [mot, '  (automatisch: das Meiste, was diese Größe dauerhaft schafft)']
     elif d.p_wanted > d.p_top:
@@ -39,6 +45,7 @@ def summary(d, results=None, r_exact=None):
         head = [mot]
     head.append(
         f'Elektrisch aufgenommen: {_n(d.p_in, 1)} W ({_n(d.current, 2)} A), davon Wärme im Kupfer {_n(d.p_cu, 1)} W'
+        f' – Wirkungsgrad {_n(100 * d.p_mech / d.p_in if d.p_in else 0, 0)} % (nur Kupfer)'
     )
     phase = p.boards == 3
     if p.b_gap > 0:
@@ -104,6 +111,13 @@ def summary(d, results=None, r_exact=None):
             + f'): Mindestbahn/-abstand {_n(d.s, 2)} mm angenommen, Platine {_n(p.board_t, 1)} mm – '
             'vor der Bestellung mit den Fertigerregeln (z. B. PCBWay) abgleichen. '
             'Wirbelstromverluste im dicken Kupfer sind nicht gerechnet.'
+        )
+    if p.h_air >= OIL:
+        warn.append(
+            'Ölkühlung: Die Rotorscheiben drehen im Öl – Planschverluste kosten bei hoher Drehzahl viel Leistung'
+            ' (hier nicht gerechnet). Die Wärme muss über das Gehäuse an die Luft (Rippen, Fläche). Gehäuse dicht,'
+            ' Öl muss zu Platine/Lötstellen passen (z. B. Trafo-Öl). Magnet-Temperatur beachten: N52 nur bis ca. 80 °C,'
+            ' darüber H-/SH-Sorten.'
         )
     if d.rpm0 > p.max_rpm:
         warn.append(

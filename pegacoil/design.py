@@ -28,7 +28,10 @@ COOLING = {  # Wärmeübergang je Seite in W/(m²·K) – grobe Richtwerte
     'drehende Rotorscheiben (Luftwirbel)': 25.0,
     'Fahrtwind (Fahrrad)': 50.0,
     'Lüfter': 80.0,
+    'Öl, ruhend (Tauchkühlung)': 100.0,
+    'Öl, umgewälzt': 300.0,
 }
+OIL = 100.0  # ab hier Öl
 KW = math.sqrt(3) / 2  # Wicklungsfaktor bei 3 Spulen : 2 Polen
 EDGE_PAD = 0.5  # Pad-Kupfer bis Außenkante
 VIA_AMPS = 1.0  # grobe Belastbarkeit einer 0,3-mm-Durchkontaktierung
@@ -76,6 +79,8 @@ class Params:
     pole_arc: float = 0.8  # Polbedeckung (nur Rückschluss; Halbach füllt den Umfang)
     parallel: int = 0  # Lagenpaare je Gruppe parallel (Gruppen in Reihe); 0 = automatisch
     h_air: float = H_AIR  # W/(m²·K) Wärmeübergang je Seite (siehe COOLING)
+    min_eff: float = 0.8  # Mindestwirkungsgrad (nur ohne Nenndrehzahl); begrenzt den Strom
+    speed: float = 1500.0  # U/min Nenndrehzahl (Roboter: Dauer-Drehmoment bei dieser Drehzahl); 0 = höchste Leistung
 
 
 def flux(p, poles, r_m, board_t):
@@ -260,6 +265,7 @@ class Design:
     r_hot: float = 0.0  # Ohm zwischen zwei Anschlüssen, warm (+max_rise)
     p_max: float = 0.0  # W, höchste mechanische Dauerleistung dieser Auslegung
     p_mech: float = 0.0  # W, mechanische Leistung im Betriebspunkt (Drehmoment × Drehzahl)
+    i_peak: float = 0.0  # A, Spitzenstrom U/R
     capped: bool = False  # gewünschte Leistung passt nicht → auf p_max begrenzt
     p_top: float = 0.0  # W, höchste mechanische Dauerleistung aller Auslegungen dieser Größe
     p_wanted: float = 0.0  # W, Vorgabe (0 = automatisch)
@@ -269,15 +275,26 @@ class Design:
     @property
     def usable(self):
         """Schafft die Vorgabe dauerhaft und dreht nicht unsinnig schnell."""
-        return not self.capped and self.rpm0 <= self.p.max_rpm
+        return not self.capped and self.speed_ok
 
     @property
     def p_in(self):
-        return self.p.voltage_v * self.current
+        return self.p_mech + self.p_cu
+
+    @property
+    def speed_ok(self):
+        """Nenndrehzahl erreichbar bzw. (ohne Nenndrehzahl) Leerlauf nicht unsinnig schnell."""
+        return self.p_max > 0 if self.p.speed > 0 else self.rpm0 <= self.p.max_rpm
+
+    @property
+    def torque_peak(self):
+        return self.kt * self.i_peak
 
     @property
     def rpm(self):
         """Drehzahl im Betriebspunkt (Dauerstrom)."""
+        if self.p.speed > 0:
+            return self.p.speed
         return max(0.0, self.p.voltage_v - self.current * self.r_hot) / self.kt * 60 / (2 * math.pi) if self.kt > 0 else 0.0
 
     @property
@@ -318,11 +335,21 @@ def evaluate(geo, N, p, oz):
     v = p.voltage_v
     r_hot = r_ll * (1 + ALPHA_CU * p.max_rise)
     i_max = min(math.sqrt(p_cont / r_hot), v / r_ll)
-    i_pk = min(i_max, v / (2 * r_hot))
-    p_max = i_pk * (v - i_pk * r_hot)
-    i_need = math.inf
-    if p.power_w > 0 and v * v >= 4 * r_hot * p.power_w:
-        i_need = (v - math.sqrt(v * v - 4 * r_hot * p.power_w)) / (2 * r_hot)
+    # Wirkungsgrad η = (U − I·R)/U → I ≤ U·(1 − η)/R. Ohne Grenze liefe der Strom bei guter Kühlung bis U/2R (η = 50 %).
+    if p.speed > 0:
+        # Roboter: Betriebspunkt bei Nenndrehzahl ω. Strom höchstens so groß, dass die Spannung bei ω noch reicht
+        # (U − Gegenspannung kt·ω = I·R); Leistung = kt·I·ω, das Maximum ist damit das größte Dauer-Drehmoment.
+        w_t = p.speed * 2 * math.pi / 60
+        i_pk = max(0.0, min(i_max, (v - kt * w_t) / r_hot))
+        p_max = kt * i_pk * w_t
+        i_need = p.power_w / (kt * w_t) if p.power_w > 0 and kt > 0 else math.inf
+    else:
+        i_eff = v * (1 - p.min_eff) / r_hot if 0 < p.min_eff < 1 else math.inf
+        i_pk = min(i_max, v / (2 * r_hot), i_eff)
+        p_max = i_pk * (v - i_pk * r_hot)
+        i_need = math.inf
+        if p.power_w > 0 and v * v >= 4 * r_hot * p.power_w:
+            i_need = (v - math.sqrt(v * v - 4 * r_hot * p.power_w)) / (2 * r_hot)
     capped = p.power_w > 0 and i_need > i_pk * (1 + 1e-9)
     current = i_pk if p.power_w <= 0 or capped else i_need
     limited = i_max < v / r_ll * (1 - 1e-9)  # im Stillstand flösse mehr → Treiber begrenzt
@@ -332,7 +359,8 @@ def evaluate(geo, N, p, oz):
     d.current, d.limited, d.kt, d.torque = current, limited, kt, kt * current
     d.p_cu = p_cu
     d.p_cont, d.i_max, d.r_hot, d.p_max, d.capped = p_cont, i_max, r_hot, p_max, capped
-    d.p_mech = current * (v - current * r_hot)
+    d.p_mech = kt * current * p.speed * 2 * math.pi / 60 if p.speed > 0 else current * (v - current * r_hot)
+    d.i_peak = v / r_ll  # Stillstand an voller Spannung (nur Sekunden, Treiber muss es können)
     d.b1, d.b = b1, b
     d.rise = p_cu / (p.h_air * 2 * area * max(1, p.boards))
     return d
@@ -351,20 +379,23 @@ def _better(d, best):
 
 def best_for(p, n, oz, nc, r1, w_min, s):
     best, worse, p_top = None, 0, 0.0
+    g0 = Geo(p, n, nc, w_min, s, r1)
+    w_prev = max(w_min + 4.0, g0.r2 - r1)  # bei 1 Windung kann die Bahn fast die ganze Spule füllen
     for N in range(1, 500):
-        if not Geo(p, n, nc, w_min, s, r1).fits(N):
+        if not g0.fits(N):
             break
-        g0 = Geo(p, n, nc, w_min, s, r1)
-        lo, hi = w_min, max(w_min + 4.0, g0.r2 - r1)  # bei 1 Windung kann die Bahn fast die ganze Spule füllen
-        for _ in range(12):  # Spanne bis ~40 mm → 0,01 mm genau
+        # mehr Windungen → nie breitere Bahn: die Breite der vorigen Windungszahl ist die Obergrenze
+        lo, hi = w_min, w_prev + 1e-3
+        while hi - lo > 0.002:
             mid = (lo + hi) / 2
             if Geo(p, n, nc, mid, s, r1).fits(N):
                 lo = mid
             else:
                 hi = mid
+        w_prev = lo
         w = max(w_min, math.floor(lo * 1000) / 1000)
         d = evaluate(Geo(p, n, nc, w, s, r1), N, p, oz)
-        if d.rpm0 <= p.max_rpm:
+        if d.speed_ok:
             p_top = max(p_top, d.p_max)
         if _better(d, best):
             best, worse = d, 0
@@ -414,32 +445,40 @@ def _candidates(p, only=None):
     for n in layers:
         top_n, worse = 0.0, 0
         for oz in ozs:
-            # Kupfer automatisch: dicker hilft, bis der größere Mindestabstand überwiegt → nach zwei schlechteren
-            # Stufen aufhören
-            if worse >= 2 and only is None:
+            # Kupfer automatisch: dicker hilft, bis der größere Mindestabstand überwiegt → nach der ersten
+            # schlechteren Stufe aufhören
+            if worse >= 1 and only is None:
                 break
             start = len(out)
             for io, par in ((io, par) for io in inner_choices(p, n, oz) for par in parallel_choices(p, n)):
                 pn = replace(p, inner_oz=io, parallel=par)
                 pn = replace(pn, board_t=board_thickness(pn, n, oz))
                 w_min, s = rules(pn, n, oz)
+                top_c, worse_c = 0.0, 0
                 for nc in coils:
                     if only is not None and (n, oz, io, nc, par) not in only:
                         continue
+                    if worse_c >= 2 and only is None:  # Spulenzahl: nach zwei schlechteren aufhören
+                        break
                     g = Geo(pn, n, nc, w_min, s, r1_min)
                     span = g.r2 - r1_min
                     if span <= 1.0:
                         continue
                     best = None
-                    for f in (0.0, 0.15, 0.3):
+                    for f in (0.0, 0.2):
                         d = best_for(pn, n, oz, nc, r1_min + f * span, w_min, s)
                         if d and _better(d, best):
                             d.p_top = max(d.p_top, best.p_top if best else 0.0)
                             best = d
                         elif d:
                             best.p_top = max(best.p_top, d.p_top)
+                            break  # größerer Innenradius hilft nicht mehr
                     if best:
                         out.append(best)
+                        if best.p_top > top_c:
+                            top_c, worse_c = best.p_top, 0
+                        else:
+                            worse_c += 1
             top_oz = max((d.p_top for d in out[start:]), default=0.0)
             if top_oz > top_n:
                 top_n, worse = top_oz, 0
@@ -457,7 +496,8 @@ def parallel_choices(p, n):
     pairs = n // 2
     if p.parallel:
         return (p.parallel,) if pairs % p.parallel == 0 else (1,)
-    return tuple(k for k in range(1, pairs + 1) if pairs % k == 0)
+    divs = [k for k in range(1, pairs + 1) if pairs % k == 0]
+    return tuple(sorted({1, divs[-1], divs[-2] if len(divs) > 1 else 1}))  # Reihe, halb, alle parallel
 
 
 def cost(d):

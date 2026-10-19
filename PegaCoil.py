@@ -5,6 +5,7 @@ import importlib
 import math
 import os
 import tempfile
+import threading
 import time
 import traceback
 
@@ -81,6 +82,8 @@ def _params(inputs):
         clearance=val('clearance'),
         h_air=_choice(inputs, 'cooling', COOLINGS),
         max_rise=val('rise'),
+        speed=val('speed'),
+        min_eff=val('min_eff') / 100,
         max_rpm=val('max_rpm'),
         min_trace=val('min_trace'),
         min_space=val('min_space'),
@@ -100,8 +103,8 @@ def _compute(inputs):
     return _last['result']
 
 
-SIZE_IDS = ('od', 'id', 'volt', 'cooling', 'boards', 'rotor', 'magnet', 'magnet_h', 'clearance', 'layers', 'coils', 'outer_oz',
-            'inner_oz', 'b_gap', 'rise', 'max_rpm',
+SIZE_IDS = ('od', 'id', 'volt', 'speed', 'cooling', 'boards', 'rotor', 'magnet', 'magnet_h', 'clearance', 'layers', 'coils', 'outer_oz',
+            'inner_oz', 'b_gap', 'rise', 'min_eff', 'max_rpm',
             'min_trace', 'min_space', 'via_drill', 'via_pad', 'pad_drill', 'pad_d')
 _sync = {}  # Werte, die PegaCoil selbst gesetzt hat (deren Änderungsereignis wird übergangen)
 
@@ -124,34 +127,76 @@ def _motor_line(d):
     n = _report._n
     return (
         f'<b>{n(d.p_mech, 1)} W</b> an der Welle · Aufnahme <b>{n(d.p_in, 1)} W</b> ({n(d.current, 2)} A)<br>'
-        f'Drehmoment <b>{_report.torque_text(d.torque)}</b> bei {n(d.rpm, 0)} U/min · Leerlauf {n(d.rpm0, 0)} U/min<br>'
+        f'Drehmoment <b>{_report.torque_text(d.torque)}</b> dauerhaft bei {n(d.rpm, 0)} U/min,'
+        f' Spitze <b>{_report.torque_text(d.torque_peak)}</b> · Leerlauf {n(d.rpm0, 0)} U/min<br>'
         f'{"3 Platinen" if d.p.boards == 3 else "1 Platine"}, {d.layers} Lagen, {n(d.outer_oz, 0)} oz, {d.coils} Spulen,'
         f' {d.poles} Pole, B {n(d.b1, 2)} T, Erwärmung +{n(d.rise, 0)} K'
     )
 
 
+LIVE_EVENT = 'PegaCoil_Live'
+_live_state = {'gen': 0, 'inputs': None, 'result': None}
+_live_lock = threading.Lock()
+
+
 def _live(inputs, changed):
-    """Größe/Lagen/Spannung geändert → Leistung eintragen; Leistung geändert → Größe einstellen."""
+    """Größe/Lagen/Spannung geändert → Leistung eintragen; Leistung geändert → Größe einstellen.
+    Gerechnet wird im Hintergrund (das Fenster friert nicht ein); nur die letzte Eingabe zählt."""
+    _live_state['gen'] += 1
+    _live_state['inputs'] = inputs
+    gen = _live_state['gen']
     p = _params(inputs)
-    if changed == 'power':
-        if p.power_w > 0:
-            od, _ = _design.size_for_power(p, p.power_w)
-            if abs(od - p.outer_d) > 1e-6:
-                _set(inputs, 'od', od / 10, f'{od:g} mm')
-                p = dataclasses.replace(p, outer_d=od)
-    else:
-        top = math.floor(_design.top_power(p) * 10) / 10
-        if abs(top - p.power_w) > 1e-6:
-            _set(inputs, 'power', top)
-        p = dataclasses.replace(p, power_w=top)
-    try:
-        d, results = _design.optimize(p)
-    except ValueError as e:
-        inputs.itemById('motor').formattedText = str(e)
-        _show(inputs, str(e))
-        return
-    inputs.itemById('motor').formattedText = _motor_line(d)
-    _show(inputs, _report.summary(d, results))
+    inputs.itemById('motor').formattedText = '<i>rechne …</i>'
+    threading.Thread(target=_live_worker, args=(gen, p, changed), daemon=True).start()
+
+
+def _live_worker(gen, p, changed):
+    """Läuft im Hintergrund-Thread: nur reine Rechnung, keine Fusion-API."""
+    with _live_lock:  # eine Rechnung nach der anderen; veraltete gar nicht erst anfangen
+        if gen != _live_state['gen']:
+            return
+        res = {'gen': gen}
+        try:
+            if changed == 'power':
+                if p.power_w > 0:
+                    od, _ = _design.size_for_power(p, p.power_w)
+                    if abs(od - p.outer_d) > 1e-6:
+                        res['od'] = od
+                        p = dataclasses.replace(p, outer_d=od)
+            else:
+                top = math.floor(_design.top_power(p) * 10) / 10
+                if abs(top - p.power_w) > 1e-6:
+                    res['power'] = top
+                p = dataclasses.replace(p, power_w=top)
+            d, results = _design.optimize(p)
+            res['motor'] = _motor_line(d)
+            res['text'] = _report.summary(d, results)
+        except ValueError as e:
+            res['motor'] = res['text'] = str(e)
+        except Exception:
+            res['motor'] = 'Fehler bei der Rechnung'
+            res['text'] = traceback.format_exc()
+    if gen == _live_state['gen']:
+        _live_state['result'] = res
+        _app.fireCustomEvent(LIVE_EVENT, str(gen))
+
+
+class LiveResultHandler(adsk.core.CustomEventHandler):
+    """Ergebnis der Hintergrund-Rechnung im Hauptthread ins Fenster schreiben."""
+
+    def notify(self, args):
+        try:
+            res, inputs = _live_state['result'], _live_state['inputs']
+            if not res or not inputs or res['gen'] != _live_state['gen']:
+                return
+            if 'od' in res:
+                _set(inputs, 'od', res['od'] / 10, f"{res['od']:g} mm")
+            if 'power' in res:
+                _set(inputs, 'power', res['power'])
+            inputs.itemById('motor').formattedText = res['motor']
+            _show(inputs, res['text'])
+        except Exception:
+            pass  # Fenster inzwischen geschlossen
 
 
 def _show(inputs, text):
@@ -176,8 +221,9 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             inputs.addTextBoxCommandInput('version', '', info, 1, True)
             inputs.addValueInput('od', 'Außendurchmesser', 'mm', adsk.core.ValueInput.createByString('60 mm'))
             inputs.addValueInput('id', 'Innendurchmesser', 'mm', adsk.core.ValueInput.createByString('10 mm'))
-            inputs.addFloatSpinnerCommandInput('volt', 'Spannung (V)', '', 1, 400, 1, 12)
-            inputs.addFloatSpinnerCommandInput('power', 'Motorleistung W (Welle)', '', 0, 5000, 1, 0)
+            inputs.addFloatSpinnerCommandInput('volt', 'Spannung (V)', '', 1, 400, 1, 24)
+            inputs.addFloatSpinnerCommandInput('speed', 'Nenndrehzahl U/min (0 = höchste Leistung)', '', 0, 30000, 100, 1500)
+            inputs.addFloatSpinnerCommandInput('power', 'Motorleistung W (Welle, bei Nenndrehzahl)', '', 0, 5000, 1, 0)
             _dropdown(inputs, 'cooling', 'Kühlung', COOLINGS)
             _dropdown(inputs, 'boards', 'Aufbau', BOARDS)
             _dropdown(inputs, 'rotor', 'Magnete', ROTORS)
@@ -194,6 +240,7 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             gi.addFloatSpinnerCommandInput('clearance', 'Luft Platine–Magnet je Seite (mm)', '', 0.1, 5, 0.1, 0.5)
             gi.addFloatSpinnerCommandInput('b_gap', 'Flussdichte vorgeben T (0 = aus Magneten)', '', 0, 1.5, 0.05, 0)
             gi.addFloatSpinnerCommandInput('rise', 'Max. Erwärmung (K)', '', 5, 120, 5, 40)
+            gi.addFloatSpinnerCommandInput('min_eff', 'Mindestwirkungsgrad % (nur ohne Nenndrehzahl)', '', 50, 99, 1, 80)
             gi.addFloatSpinnerCommandInput('max_rpm', 'Max. Leerlaufdrehzahl (U/min)', '', 1000, 200000, 1000, 10000)
             gi.addFloatSpinnerCommandInput('min_trace', 'Min. Bahnbreite mm (0 = auto)', '', 0, 2, 0.01, 0)
             gi.addFloatSpinnerCommandInput('min_space', 'Min. Abstand mm (0 = auto)', '', 0, 2, 0.01, 0)
@@ -333,6 +380,14 @@ def run(context):
         _app = adsk.core.Application.get()
         _ui = _app.userInterface
         _update.start()  # neue Version auf GitHub? Im Hintergrund prüfen und holen
+        try:
+            _app.unregisterCustomEvent(LIVE_EVENT)
+        except Exception:
+            pass
+        ev = _app.registerCustomEvent(LIVE_EVENT)
+        lh = LiveResultHandler()
+        ev.add(lh)
+        _handlers.append(lh)
         cmd_def = _ui.commandDefinitions.itemById(CMD_ID)
         if cmd_def:
             try:
@@ -365,6 +420,11 @@ def stop(context):
         cmd_def = _ui.commandDefinitions.itemById(CMD_ID)
         if cmd_def:
             cmd_def.deleteMe()
+        _live_state['inputs'] = None
+        try:
+            _app.unregisterCustomEvent(LIVE_EVENT)
+        except Exception:
+            pass
         _handlers.clear()
     except Exception:
         if _ui:
