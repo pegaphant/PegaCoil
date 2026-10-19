@@ -2,11 +2,17 @@
 
 import math
 
-from .design import ALPHA_CU, VIA_AMPS, _better, layer_thickness
+from .design import ALPHA_CU, HALBACH_SEGMENTS, MAGNETS, VIA_AMPS, _better, layer_thickness
+from .rotor import IRON_T, stack
 
 
 def _n(x, d=2):
     return f'{x:,.{d}f}'.replace(',', ' ').replace('.', ',')
+
+
+def torque_text(t):
+    """Drehmoment lesbar: unter 1 Nm in mNm, sonst in Nm."""
+    return f'{_n(t * 1000, 1)} mNm' if t < 1 else f'{_n(t, 2)} Nm'
 
 
 def summary(d, results=None, r_exact=None):
@@ -17,10 +23,9 @@ def summary(d, results=None, r_exact=None):
     hot = 1 + ALPHA_CU * p.max_rise
     r_m = (g.r1 + g.r2) / 2
     pitch = 2 * math.pi * r_m / d.poles
-    mag = min(0.85 * pitch, 0.9 * (g.r2 - g.r1))
     mot = (
         f'Motorleistung (mechanisch, dauerhaft): ca. {_n(d.p_mech, 1)} W'
-        f' – {_n(d.torque * 1000, 1)} mNm bei {_n(d.rpm, 0)} U/min ({_n(p.voltage_v, 1)} V)'
+        f' – {torque_text(d.torque)} bei {_n(d.rpm, 0)} U/min ({_n(p.voltage_v, 1)} V)'
     )
     if d.p_wanted <= 0:
         head = [mot, '  (automatisch: das Meiste, was diese Größe dauerhaft schafft)']
@@ -31,12 +36,40 @@ def summary(d, results=None, r_exact=None):
     head.append(
         f'Elektrisch aufgenommen: {_n(d.p_in, 1)} W ({_n(d.current, 2)} A), davon Wärme im Kupfer {_n(d.p_cu, 1)} W'
     )
+    phase = p.boards == 3
+    if p.b_gap > 0:
+        field = f'Flussdichte vorgegeben: {_n(p.b_gap, 2)} T (Mittel)'
+    else:
+        kind = (f'Halbach, {HALBACH_SEGMENTS // 2} Segmente je Pol' if p.rotor == 'halbach'
+                else f'auf Stahlrückschluss, Polbedeckung {_n(p.pole_arc * 100, 0)} %')
+        field = (f'Magnete {p.magnet} ({_n(MAGNETS.get(p.magnet, 1.3), 2)} T), {_n(p.magnet_h, 1)} mm dick, beidseitig {kind};'
+                 f' Spalt Magnet–Magnet {_n(p.board_t + 2 * p.clearance, 1)} mm → B ≈ {_n(d.b1, 2)} T Spitze,'
+                 f' {_n(d.b, 2)} T Mittel')
+    st = stack(d)
+    if p.rotor == 'halbach':
+        mags = (f'{len(st.discs)} Rotorscheiben, {st.magnet_count} Halbach-Segmente ({HALBACH_SEGMENTS // 2} je Pol,'
+                f' innere Scheiben zwei Lagen Rücken an Rücken)')
+    else:
+        mags = (f'{len(st.discs)} Rotorscheiben, {st.magnet_count} Magnete N/S abwechselnd'
+                f' (außen auf {_n(IRON_T, 0)} mm Stahl, innen durchgehend)')
+    mags += f'; Stapelhöhe {_n(st.height, 1)} mm, Welle Ø {_n(st.shaft_d, 0)} mm'
+    if phase:
+        build = [
+            f'Aufbau: 3 gleiche Platinen, je Phase eine (gestapelt, jede in eigenem Luftspalt) – 3 Stück bestellen',
+            f'  Platine 2 um {_n(240 / d.coils, 2)}°, Platine 3 um {_n(480 / d.coils, 2)}° gegen Platine 1 verdreht'
+            ' einbauen (120° elektrisch)',
+            f'Spulen: {d.coils} je Platine, alle in Reihe, benachbarte gegensinnig (eine Spule je Pol)',
+        ]
+        conn = 'Anschlüsse je Platine P1/P2: Platine 1 = U, 2 = V, 3 = W – Stern: alle P2 verbinden.'
+    else:
+        build = [f'Spulen: {d.coils} (3 Phasen × {d.coils // 3} in Reihe), Magnetpole: {d.poles}']
+        conn = 'Anschlüsse: U1/U2, V1/V2, W1/W2 – Stern: U2+V2+W2 verbinden, Dreieck: U2–V1, V2–W1, W2–U1.'
     L = head + [
         '',
         f'Platine: Ø {_n(p.outer_d, 1)} / Ø {_n(p.inner_d, 1)} mm, {d.layers} Lagen, {_n(p.board_t, 1)} mm',
         f'Kupfer: außen {_n(d.outer_oz, 1)} oz ({_n(ts[0] * 1000, 0)} µm)'
         + (f', innen {_n(p.inner_oz, 1)} oz ({_n(ts[1] * 1000, 1)} µm)' if d.layers > 2 else ''),
-        f'Spulen: {d.coils} (3 Phasen × {d.coils // 3} in Reihe), Magnetpole: {d.poles}',
+        *build,
         f'Windungen: {d.turns} je Lage, {d.turns * d.layers} je Spule',
         f'Bahnbreite {_n(d.w, 3)} mm, Abstand {_n(d.s, 3)} mm',
         f'Spulenbereich: r = {_n(g.r1, 1)} … {_n(g.r2, 1)} mm',
@@ -45,18 +78,17 @@ def summary(d, results=None, r_exact=None):
         f'Zwischen zwei Anschlüssen (Stern): {_n(r_ll, 2)} Ω',
         f'Dauerstrom: {_n(d.current, 2)} A, höchstens {_n(d.i_max, 2)} A'
         + (' – Treiber muss den Anlaufstrom darauf begrenzen' if d.limited else ''),
-        f'Verlustleistung Kupfer: {_n(d.p_cu, 1)} W → Platine ca. +{_n(d.rise, 0)} K'
+        f'Verlustleistung Kupfer: {_n(d.p_cu, 1)} W → Platinen ca. +{_n(d.rise, 0)} K'
         f' (zulässig +{_n(p.max_rise, 0)} K, ruhende Luft)',
         '',
-        f'Drehmomentkonstante (geschätzt, B = {_n(p.b_gap, 2)} T): {_n(d.kt * 1000, 2)} mNm/A',
-        f'Dauer-Drehmoment: {_n(d.torque * 1000, 1)} mNm',
+        f'Drehmomentkonstante: {_n(d.kt * 1000, 2)} mNm/A',
+        f'Dauer-Drehmoment: {torque_text(d.torque)}',
         f'Leerlaufdrehzahl bei {_n(p.voltage_v, 1)} V: ca. {_n(d.rpm0, 0)} U/min',
         '',
-        f'Magnete: {d.poles} Stück, N/S abwechselnd, auf r ≈ {_n(r_m, 1)} mm',
-        f'  z. B. Scheiben Ø {_n(math.floor(mag), 0)} mm (Polteilung {_n(pitch, 1)} mm), Luftspalt ≤ 1 mm',
-        '  Rückschlussscheibe aus Stahl hinter den Magneten erhöht B deutlich.',
+        field,
+        f'{mags}, auf r = {_n(g.r1, 1)} … {_n(g.r2, 1)} mm (Polteilung {_n(pitch, 1)} mm in der Mitte)',
         '',
-        'Anschlüsse: U1/U2, V1/V2, W1/W2 – Stern: U2+V2+W2 verbinden, Dreieck: U2–V1, V2–W1, W2–U1.',
+        conn,
     ]
     warn = []
     if d.outer_oz > 2 or (d.layers > 2 and p.inner_oz > 2):
@@ -76,7 +108,7 @@ def summary(d, results=None, r_exact=None):
     if warn:
         L += [''] + warn
     if results:
-        L += ['', 'Vergleich (jeweils beste Spulenzahl):', '  Lagen  außen  innen  Spulen  Wdg/Lage  Bahn mm   Ω Phase   mNm  W Welle']
+        L += ['', 'Vergleich (jeweils beste Spulenzahl):', '  Lagen  außen  innen  Spulen  Wdg/Lage  Bahn mm   Ω Phase      Nm  W Welle']
         best = {}
         for r in results:
             k = (r.layers, r.outer_oz, r.p.inner_oz if r.layers > 2 else 0.0)
@@ -87,6 +119,6 @@ def summary(d, results=None, r_exact=None):
             mark = ' ←' if r is d or (r.layers, r.outer_oz, r.coils, r.p.inner_oz) == (d.layers, d.outer_oz, d.coils, d.p.inner_oz) else ''
             inner = _n(r.p.inner_oz, 1) + ' oz' if r.layers > 2 else '    –'
             L.append(
-                f'  {r.layers:5d}  {_n(r.outer_oz, 0):>2} oz  {inner:>6}  {r.coils:6d}  {r.turns:8d}  {_n(r.w, 3):>7}  {_n(r.r_phase, 2):>8}  {_n(r.torque * 1000, 1):>6}  {_n(r.p_mech, 1):>7}{mark}'
+                f'  {r.layers:5d}  {_n(r.outer_oz, 0):>2} oz  {inner:>6}  {r.coils:6d}  {r.turns:8d}  {_n(r.w, 3):>7}  {_n(r.r_phase, 2):>8}  {_n(r.torque, 3):>7}  {_n(r.p_mech, 1):>7}{mark}'
             )
     return '\n'.join(L)

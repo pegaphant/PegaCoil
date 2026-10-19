@@ -6,7 +6,6 @@ Mittelpunkt der Platine bei (100, 100) mm.
 
 import math
 
-from .design import PHASES
 from .layout import ends
 
 CX, CY = 100.0, 100.0
@@ -57,10 +56,10 @@ def to_kicad(layout, title='PegaCoil'):
         '  (setup (pad_to_mask_clearance 0))',
         '  (net 0 "")',
     ]
-    for i, ph in enumerate(PHASES):
+    for i, ph in enumerate(layout.nets):
         out.append(f'  (net {i + 1} "{ph}")')
     for pad in layout.pads:
-        ph = PHASES[pad.net - 1]
+        ph = layout.nets[pad.net - 1]
         out.append(
             f'  (footprint "PegaCoil:Anschluss" (layer "F.Cu") (at {_p((pad.x, pad.y))})\n'
             f'    (attr through_hole)\n'

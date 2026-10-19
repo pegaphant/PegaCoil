@@ -26,8 +26,12 @@ H_AIR = 12.0  # W/(m²·K), freie Konvektion + Strahlung je Seite
 KW = math.sqrt(3) / 2  # Wicklungsfaktor bei 3 Spulen : 2 Polen
 EDGE_PAD = 0.5  # Pad-Kupfer bis Außenkante
 VIA_AMPS = 1.0  # grobe Belastbarkeit einer 0,3-mm-Durchkontaktierung
-COIL_CHOICES = (3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 36)
-LAYER_CHOICES = (2, 4, 6, 8)
+COIL_CHOICES = (3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 36)  # 1 Platine, 3 Phasen (3 Spulen : 2 Pole)
+PHASE_COIL_CHOICES = (6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36)  # je Phase eine Platine (1 Spule je Pol)
+LAYER_CHOICES = (2, 4, 6, 8, 10, 12)
+MAGNETS = {'N35': 1.19, 'N42': 1.30, 'N45': 1.35, 'N48': 1.40, 'N52': 1.45}  # Remanenz Br in T
+HALBACH_SEGMENTS = 4  # Segmente je Wellenlänge (2 je Pol)
+HALBACH_QUALITY = 0.85  # echte Ringe: Fugen, Magnetisierungsfehler (ideale Formel ist zu optimistisch)
 OZ_CHOICES = (1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 13.0)  # PCBWay: Heavy Copper bis 13 oz
 INNER_OZ_CHOICES = (0.5, 1.0, 2.0, 3.0, 4.0, 6.0)
 # Kleinste Bahnbreite/Abstand je Kupferdicke (vorsichtig; Heavy Copper braucht deutlich mehr Abstand).
@@ -45,9 +49,9 @@ class Params:
     voltage_v: float = 12.0
     layers: int = 0  # 0 = automatisch
     coils: int = 0  # 0 = automatisch
-    outer_oz: float = 0.0  # 0 = automatisch (1 oder 2 oz)
-    inner_oz: float = 0.0  # 0 = automatisch (0,5 oder 1 oz)
-    b_gap: float = 0.3  # T, Flussdichte im Luftspalt
+    outer_oz: float = 0.0  # 0 = automatisch (bis 13 oz)
+    inner_oz: float = 0.0  # 0 = automatisch (wie außen, bis 6 oz)
+    b_gap: float = 0.0  # T, mittlere Flussdichte im Luftspalt; 0 = aus den Magneten berechnet
     max_rise: float = 40.0  # K, zulässige Erwärmung der Platine
     max_rpm: float = 10000.0  # U/min, höchste Leerlaufdrehzahl (sonst nur Watt durch Drehzahl)
     min_trace: float = 0.0  # 0 = nach Kupferdicke
@@ -58,6 +62,32 @@ class Params:
     pad_d: float = 2.0
     edge_clear: float = 0.3  # Kupfer bis Innenbohrung
     board_t: float = 1.6
+    boards: int = 3  # 3 = je Phase eine Platine (gestapelt), 1 = eine Platine mit allen 3 Phasen
+    rotor: str = 'halbach'  # 'halbach' (beidseitig, ohne Eisen) oder 'iron' (beidseitig auf Stahlrückschluss)
+    magnet: str = 'N52'
+    magnet_h: float = 5.0  # mm Magnetdicke je Seite
+    clearance: float = 0.5  # mm Luft je Seite zwischen Platine und Magnet
+    pole_arc: float = 0.8  # Polbedeckung (nur Rückschluss; Halbach füllt den Umfang)
+
+
+def flux(p, poles, r_m, board_t):
+    """(B1, B_mittel) im Luftspalt in T: Grundwelle an der Platinenmitte bei Magneten auf beiden Seiten und
+    die mittlere Flussdichte unter einem Leiter (2/π · B1), mit der das Drehmoment gerechnet wird.
+    Polteilung τ am mittleren Spulenradius – mehr Pole = kürzere Polteilung = mehr Streufeld."""
+    if p.b_gap > 0:
+        return p.b_gap * math.pi / 2, p.b_gap
+    br = MAGNETS.get(p.magnet, 1.3)
+    tau = 2 * math.pi * r_m / poles
+    k = math.pi / tau
+    g = board_t + 2 * p.clearance  # Abstand der Magnetflächen
+    hm = p.magnet_h
+    if p.rotor == 'halbach':
+        m = HALBACH_SEGMENTS
+        seg = math.sin(math.pi / m) / (math.pi / m)
+        b1 = HALBACH_QUALITY * 2 * br * seg * (1 - math.exp(-k * hm)) * math.exp(-k * g / 2)
+    else:
+        b1 = 4 / math.pi * br * math.sin(p.pole_arc * math.pi / 2) * math.sinh(k * hm) / math.sinh(k * (hm + g / 2))
+    return b1, 2 / math.pi * b1
 
 
 def rules(p, layers, outer_oz):
@@ -98,7 +128,9 @@ class Geo:
         vr2 = max(self.vr, self.wr / 2)
         self.ring_step = self.wr / 2 + vr2 + s
         top = self.r_pad - self.pad_h - s - vr2
-        self.r_ring = [top - 2 * self.ring_step, top - self.ring_step, top]
+        # Verbindungsbögen: 3 Ringe (U, V, W) bzw. bei einer Phase je Platine 2 (Ende–Ende, Anfang–Anfang)
+        nr = 2 if p.boards == 3 else 3
+        self.r_ring = [top - (nr - 1 - i) * self.ring_step for i in range(nr)]
         self.r_v = self.r_ring[0] - vr2 - s - self.vh  # Reihe der äußeren Durchkontaktierungen
         self.r_l = self.r_v - self.vh - s - w / 2  # Reihe der Übergangsleitungen
         self.r2 = self.r_l - w / 2 - s  # Kupferkante außen
@@ -212,6 +244,8 @@ class Design:
     capped: bool = False  # gewünschte Leistung passt nicht → auf p_max begrenzt
     p_top: float = 0.0  # W, höchste mechanische Dauerleistung aller Auslegungen dieser Größe
     p_wanted: float = 0.0  # W, Vorgabe (0 = automatisch)
+    b1: float = 0.0  # T, Grundwelle im Luftspalt
+    b: float = 0.0  # T, mittlere Flussdichte unter den Leitern
 
     @property
     def usable(self):
@@ -229,7 +263,7 @@ class Design:
 
     @property
     def poles(self):
-        return 2 * self.coils // 3
+        return self.coils if self.p.boards == 3 else 2 * self.coils // 3
 
     @property
     def rpm0(self):
@@ -241,15 +275,23 @@ def evaluate(geo, N, p, oz):
     L, S = geo.coil_sums(N)
     ts = layer_thickness(n, oz, p.inner_oz)
     r_coil = sum(RHO_CU * L / (geo.w * t) * 1e3 for t in ts)
-    m = nc // 3
     t_o = oz * OZ_MM
-    ring_len = (m - 1) * 6 * geo.phi * geo.r_ring[1]
-    stub_len = 2 * m * (geo.r_ring[1] - geo.r2) + 2 * (geo.r_pad - geo.r_ring[1])
+    if p.boards == 3:
+        # je Phase eine Platine: alle Spulen in Reihe, benachbarte gegensinnig, Spulenweite = Polteilung
+        m, kw, poles = nc, 1.0, nc
+        r_mid = sum(geo.r_ring) / len(geo.r_ring)
+        ring_len = (nc - 1) * 2 * geo.phi * r_mid
+        stub_len = 2 * nc * (geo.r_ring[-1] - geo.r2) + 2 * (geo.r_pad - geo.r2)
+    else:
+        m, kw, poles = nc // 3, KW, 2 * nc // 3
+        ring_len = (m - 1) * 6 * geo.phi * geo.r_ring[1]
+        stub_len = 2 * m * (geo.r_ring[1] - geo.r2) + 2 * (geo.r_pad - geo.r_ring[1])
     r_phase = m * r_coil + RHO_CU * 1e3 * (ring_len / (geo.wr * t_o) + stub_len / (geo.w * t_o))
     r_ll = 2 * r_phase
-    kt = 2 * m * KW * p.b_gap * n * S * 1e-6  # S je Lage, alle Lagen tragen
+    b1, b = flux(p, poles, (geo.r1 + geo.r2) / 2, p.board_t)
+    kt = 2 * m * kw * b * n * S * 1e-6  # S je Lage, alle Lagen tragen
     area = math.pi * ((p.outer_d / 2) ** 2 - (p.inner_d / 2) ** 2) * 1e-6
-    p_cont = H_AIR * 2 * area * p.max_rise
+    p_cont = H_AIR * 2 * area * p.max_rise * max(1, p.boards)  # jede Platine kühlt über beide Seiten
     # Dauerstrom: Kupferverlust (warm) höchstens p_cont, und nie mehr als U/R im Stillstand.
     # Mechanische Leistung P = I · (U − I · R_warm) (Gegenspannung = Rest der Spannung), größte bei I = U / 2R.
     v = p.voltage_v
@@ -270,6 +312,8 @@ def evaluate(geo, N, p, oz):
     d.p_cu, d.rise = p_cu, p_cu / (H_AIR * 2 * area)
     d.p_cont, d.i_max, d.r_hot, d.p_max, d.capped = p_cont, i_max, r_hot, p_max, capped
     d.p_mech = current * (v - current * r_hot)
+    d.b1, d.b = b1, b
+    d.rise = p_cu / (H_AIR * 2 * area * max(1, p.boards))
     return d
 
 
@@ -340,7 +384,11 @@ def _candidates(p, only=None):
     out = []
     layers = (p.layers,) if p.layers else LAYER_CHOICES
     ozs = (p.outer_oz,) if p.outer_oz else OZ_CHOICES
-    coils = (p.coils,) if p.coils else COIL_CHOICES
+    allowed = PHASE_COIL_CHOICES if p.boards == 3 else COIL_CHOICES
+    coils = (p.coils,) if p.coils else allowed
+    if p.coils and (p.coils % 2 if p.boards == 3 else p.coils % 3):
+        raise ValueError('Spulenzahl passt nicht: je Phase eine Platine braucht eine gerade Zahl, '
+                         'eine Platine mit 3 Phasen ein Vielfaches von 3.')
     r1_min = p.inner_d / 2 + p.edge_clear
     for n in layers:
         top_n, worse = 0.0, 0

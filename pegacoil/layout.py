@@ -43,6 +43,7 @@ class Layout:
     tracks: list = field(default_factory=list)
     vias: list = field(default_factory=list)
     pads: list = field(default_factory=list)
+    nets: tuple = PHASES  # Netznamen, Index = net - 1
 
 
 # --- Transformationen ---------------------------------------------------------
@@ -157,6 +158,8 @@ def coil_local(g, N):
 
 
 def build(design):
+    if design.p.boards == 3:
+        return build_phase(design)
     g, N = design.geo, design.turns
     n, nc = g.n, g.nc
     m = nc // 3
@@ -208,9 +211,53 @@ def build(design):
     return lay
 
 
+def build_phase(design):
+    """Eine Platine je Phase: alle Spulen in Reihe, benachbarte gegensinnig (Spulenweite = Polteilung).
+
+    Kette 0 → nc-1 → nc-2 → … → 1: Spule 0 vorwärts (Anfang A an Pad P1), danach abwechselnd rückwärts/vorwärts.
+    Ende–Ende-Verbindungen (B) auf dem inneren Ring, Anfang–Anfang (A) auf dem äußeren, beide auf der Unterseite.
+    Spule 1 endet rückwärts an ihrem Anfang → Pad P2."""
+    g, N = design.geo, design.turns
+    n, nc = g.n, g.nc
+    if nc % 2:
+        raise ValueError('Je Phase eine Platine braucht eine gerade Spulenzahl.')
+    lay = Layout(design, nets=('P',))
+    local, lvias, tp0, via_t = coil_local(g, N)
+    r_b, r_a = g.r_ring[0], g.r_ring[-1]
+    for c in range(0, nc, 2):  # Ende von c ↔ Ende von c-1
+        t0 = 2 * g.phi * (c - 1) - g.ang(r_b, g.dl_t)
+        t1 = 2 * g.phi * c - g.ang(r_b, g.dl_t)
+        lay.tracks.append(Track(n - 1, [('A', r_b, t0, t1)], g.wr, 1, -1))
+    for c in range(3, nc, 2):  # Anfang von c ↔ Anfang von c-1
+        t0 = 2 * g.phi * (c - 1) + g.ang(r_a, g.dl0)
+        t1 = 2 * g.phi * c + g.ang(r_a, g.dl0)
+        lay.tracks.append(Track(n - 1, [('A', r_a, t0, t1)], g.wr, 1, -1))
+    for c in range(nc):
+        th = 2 * g.phi * c
+        for li, path in local.items():
+            lay.tracks.append(Track(li, [rot_prim(pr, th) for pr in path], g.w, 1, c))
+        for v in lvias:
+            lay.vias.append(Via(*rot(v, th), 1, c))
+        if c in (0, 1):  # Anschluss außen am Anfang
+            pad = g.pt(g.r_pad, g.dl_pad)
+            a = g.pt(g.r_pad, g.dl0)
+            start = [('L', pad, a), ('L', a, tp0)]
+            lay.pads.append(Pad(*rot(pad, th), 'P1' if c == 0 else 'P2', 1, c))
+        else:
+            a = g.pt(r_a, g.dl0)
+            start = [('L', a, tp0)]
+            lay.vias.append(Via(*rot(a, th), 1, c))
+        l1 = next(t for t in lay.tracks if t.coil == c and t.layer == 0)
+        l1.path[:0] = [rot_prim(pr, th) for pr in start]
+        b = mpt(g.pt(r_b, g.dl_t))
+        lay.tracks.append(Track(0, [rot_prim(('L', via_t, b), th)], g.w, 1, c))
+        lay.vias.append(Via(*rot(b, th), 1, c))
+    return lay
+
+
 def phase_resistance(lay, rho, thickness):
     """Genauer Phasenwiderstand (20 °C) aus den Bahnlängen."""
-    r = [0.0, 0.0, 0.0]
+    r = [0.0] * len(lay.nets)
     for t in lay.tracks:
         r[t.net - 1] += rho * path_length(t.path) / (t.width * thickness[t.layer]) * 1e3
     return r

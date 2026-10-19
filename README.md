@@ -33,6 +33,18 @@ selbst nach dem nächsten Fusion-Neustart.
    in **Fusion Electronics** als PCB geöffnet – dort *CAM-Prozessor → Gerber*. Optional zusätzlich 3D-Skizzen ins
    aktuelle Design (geht auch in „Part Design“-Dokumenten) und eine KiCad-Datei.
 
+## Rotor und Stapel
+
+Mit **„Rotor & Stapel als 3D-Baugruppe“** legt PegaCoil ein neues Design an: je Rotorscheibe eine Komponente
+(Träger, Magnete als einzelne Körper mit Magnetisierung im Namen, ggf. Stahlrückschluss), die Statoren als
+Platzhalter-Scheiben mit Anschlussbohrungen – bei 3 Platinen schon um den Einbauwinkel verdreht – und die Welle.
+Farben: rot = ↑ axial / N oben, blau = ↓ axial / S oben, gelb = tangential (Halbach).
+
+- **Halbach**: Außenscheiben eine Lage auf 2 mm unmagnetischem Boden, innere Scheiben zwei Lagen Rücken an Rücken
+  (Halbach ist nur einseitig stark). Unten ↑ → ↓ ←, oben ↑ ← ↓ → – axial gleich, tangential gegensinnig, damit
+  sich beide Seiten im Spalt addieren.
+- **Stahlrückschluss**: Außenscheiben 3 mm Stahl + Magnete, innere Scheiben Magnete durchgehend; alle N/S gleich.
+
 ## Wie gerechnet wird
 
 - **Wicklung** 3 Spulen : 2 Magnetpole (z. B. 12 Spulen / 8 Pole), Spulen U V W U V W …, alle Spulen einer Phase
@@ -56,8 +68,14 @@ selbst nach dem nächsten Fusion-Neustart.
   Ist der Widerstand kleiner als U / Dauerstrom, muss der Treiber den Strom begrenzen (wird angezeigt).
 - **Automatisch** = die Variante mit der höchsten Dauerleistung an der Welle (Lagen und Kupfer werden durchprobiert);
   schaffen mehrere die Leistung, die günstigste mit mindestens 80 % des besten Drehmoments.
-- **Drehmoment** (Schätzung): Kt = 2 · (Spulen/3) · 0,866 · B · Σ (r_außen² − r_innen²) aller radialen Leiter.
-  B = Flussdichte im Luftspalt (Vorgabe 0,3 T: N52-Magnete, ~1 mm Spalt, mit Rückschluss eher 0,4–0,5 T).
+- **Aufbau**: *3 Platinen (je Phase eine)* – jede Platine trägt nur eine Phase, eine Spule je Pol, Nachbarn
+  gegensinnig in Reihe (Wicklungsfaktor 1), dreimal Kupfer und Kühlfläche; die 3 gleichen Platinen werden um
+  240°/Spulenzahl verdreht gestapelt. Oder *1 Platine* mit allen 3 Phasen (3 Spulen : 2 Pole, Faktor 0,866).
+- **Magnetfeld** aus den Magneten: Halbach beidseitig (B1 = 0,85 · 2 Br · sin(π/4)/(π/4) · (1 − e^(−k·hm)) ·
+  e^(−k·g/2)) oder Magnete auf Stahlrückschluss (B1 = 4/π · Br · sin(α·π/2) · sinh(k·hm)/sinh(k·(hm + g/2))),
+  k = π/Polteilung, g = Platinendicke + 2 × Luft. Mehr Pole = kürzere Polteilung = mehr Streufeld; die Polzahl
+  wird mitgesucht. Gerechnet wird mit dem Mittel 2/π · B1.
+- **Drehmoment**: Kt = 2 · m · k_w · B · Σ (r_außen² − r_innen²) aller radialen Leiter (m Spulen je Phase).
 - **Wärme**: ruhende Luft, beide Seiten, h ≈ 12 W/(m²·K).
 - **Abstandsprüfung**: eigene Prüfung jeder Lage (auch zwischen Windungen derselben Spule – KiCad sieht das nicht,
   weil eine Spule ein Netz ist).

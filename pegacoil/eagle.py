@@ -8,7 +8,6 @@ mit C = Außenradius + 5 mm, damit alles im positiven Bereich liegt.
 import math
 from xml.sax.saxutils import quoteattr
 
-from .design import PHASES
 from .layout import ends
 
 LAYER_NAMES = {1: 'Top', 16: 'Bottom', 17: 'Pads', 18: 'Vias', 19: 'Unrouted', 20: 'Dimension', 21: 'tPlace',
@@ -102,7 +101,7 @@ def to_eagle(layout, title='PegaCoil'):
         out.append(f'<element name={quoteattr(pad.name)} library="pegacoil" package="ANSCHLUSS" value=""'
                    f' x="{_f(c + pad.x)}" y="{_f(c + pad.y)}"/>')
     out += ['</elements>', '<signals>']
-    for net, ph in enumerate(PHASES, start=1):
+    for net, ph in enumerate(layout.nets, start=1):
         out.append(f'<signal name="{ph}">')
         for pad in layout.pads:
             if pad.net == net:

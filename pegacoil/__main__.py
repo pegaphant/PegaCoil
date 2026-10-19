@@ -1,4 +1,4 @@
-"""Ohne Fusion: python -m pegacoil --od 60 --id 10 --power 10 --volt 12 --out stator.kicad_pcb"""
+"""Ohne Fusion: python -m pegacoil --od 60 --id 10 --volt 12 --out stator.kicad_pcb"""
 
 import argparse
 import time
@@ -17,10 +17,16 @@ def main():
     ap.add_argument('--coils', type=int, default=0, help='Spulen (0 = automatisch)')
     ap.add_argument('--oz', type=float, default=0, help='Kupfer außen in oz (0 = automatisch)')
     ap.add_argument('--inner-oz', type=float, default=0, help='Kupfer innen in oz (0 = automatisch)')
-    ap.add_argument('--b', type=float, default=0.3, help='Flussdichte im Luftspalt T')
+    ap.add_argument('--b', type=float, default=0, help='mittlere Flussdichte T (0 = aus den Magneten)')
+    ap.add_argument('--boards', type=int, default=3, choices=(1, 3), help='3 = je Phase eine Platine')
+    ap.add_argument('--rotor', default='halbach', choices=('halbach', 'iron'))
+    ap.add_argument('--magnet', default='N52')
+    ap.add_argument('--hm', type=float, default=5.0, help='Magnetdicke mm')
+    ap.add_argument('--rpm', type=float, default=10000, help='höchste Leerlaufdrehzahl')
     ap.add_argument('--out', help='KiCad-Datei schreiben')
     a = ap.parse_args()
-    p = Params(a.od, a.id, a.power, a.volt, a.layers, a.coils, a.oz, a.inner_oz, a.b)
+    p = Params(a.od, a.id, a.power, a.volt, a.layers, a.coils, a.oz, a.inner_oz, a.b, max_rpm=a.rpm,
+               boards=a.boards, rotor=a.rotor, magnet=a.magnet, magnet_h=a.hm)
     t = time.time()
     d, lay, text, errors = run(p)
     print(text)

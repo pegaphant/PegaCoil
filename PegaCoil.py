@@ -14,13 +14,13 @@ import adsk.fusion
 from . import pegacoil
 from .pegacoil import design as _design, drc as _drc, eagle as _eagle, kicad as _kicad, layout as _layout, report as _report
 
-from .pegacoil import fusion_draw, update as _update  # noqa: E402
+from .pegacoil import fusion_draw, fusion_rotor, rotor as _rotor, update as _update  # noqa: E402
 
 
 def _reload_modules():
     """Rechenmodule neu einlesen (nach einem Update bzw. weil Fusion Untermodule beim Neustart des Add-ins im
     Speicher behält). Neuladen darf den Start nie verhindern (wie PegaCAM)."""
-    for m in (_design, _layout, _drc, _kicad, _eagle, _report, _update, pegacoil, fusion_draw):
+    for m in (_design, _layout, _drc, _kicad, _eagle, _rotor, _report, _update, pegacoil, fusion_draw, fusion_rotor):
         try:
             importlib.reload(m)
         except Exception:
@@ -38,8 +38,11 @@ _ui = None
 _handlers = []
 _last = {'key': None, 'result': None}
 
-LAYERS = [('Automatisch', 0), ('2', 2), ('4', 4), ('6', 6), ('8', 8)]
-COILS = [('Automatisch', 0)] + [(str(c), c) for c in _design.COIL_CHOICES]
+LAYERS = [('Automatisch', 0)] + [(str(n), n) for n in _design.LAYER_CHOICES]
+COILS = [('Automatisch', 0)] + [(str(c), c) for c in sorted(set(_design.COIL_CHOICES) | set(_design.PHASE_COIL_CHOICES))]
+BOARDS = [('3 Platinen (je Phase eine)', 3), ('1 Platine (alle 3 Phasen)', 1)]
+ROTORS = [('Halbach (beidseitig)', 'halbach'), ('Magnete auf Stahlrückschluss (beidseitig)', 'iron')]
+GRADES = [(g, g) for g in reversed(list(_design.MAGNETS))]  # N52 zuerst
 OUTER = [('Automatisch (bis 13 oz)', 0.0)] + [(f'{o:g} oz ({o * 35:g} µm)', o) for o in _design.OZ_CHOICES]
 INNER = [('Automatisch (wie außen, bis 6 oz)', 0.0)] + [(f'{o:g} oz ({o * 35:g} µm)'.replace('.', ','), o) for o in _design.INNER_OZ_CHOICES]
 
@@ -70,6 +73,11 @@ def _params(inputs):
         outer_oz=_choice(inputs, 'outer_oz', OUTER),
         inner_oz=_choice(inputs, 'inner_oz', INNER),
         b_gap=val('b_gap'),
+        boards=_choice(inputs, 'boards', BOARDS),
+        rotor=_choice(inputs, 'rotor', ROTORS),
+        magnet=_choice(inputs, 'magnet', GRADES),
+        magnet_h=val('magnet_h') * 10,
+        clearance=val('clearance'),
         max_rise=val('rise'),
         max_rpm=val('max_rpm'),
         min_trace=val('min_trace'),
@@ -90,7 +98,8 @@ def _compute(inputs):
     return _last['result']
 
 
-SIZE_IDS = ('od', 'id', 'volt', 'layers', 'coils', 'outer_oz', 'inner_oz', 'b_gap', 'rise', 'max_rpm',
+SIZE_IDS = ('od', 'id', 'volt', 'boards', 'rotor', 'magnet', 'magnet_h', 'clearance', 'layers', 'coils', 'outer_oz',
+            'inner_oz', 'b_gap', 'rise', 'max_rpm',
             'min_trace', 'min_space', 'via_drill', 'via_pad', 'pad_drill', 'pad_d')
 _sync = {}  # Werte, die PegaCoil selbst gesetzt hat (deren Änderungsereignis wird übergangen)
 
@@ -113,8 +122,9 @@ def _motor_line(d):
     n = _report._n
     return (
         f'<b>{n(d.p_mech, 1)} W</b> an der Welle · Aufnahme <b>{n(d.p_in, 1)} W</b> ({n(d.current, 2)} A)<br>'
-        f'Drehmoment <b>{n(d.torque * 1000, 1)} mNm</b> bei {n(d.rpm, 0)} U/min · Leerlauf {n(d.rpm0, 0)} U/min<br>'
-        f'{d.layers} Lagen, {d.coils} Spulen, {d.turns} Wdg/Lage, Erwärmung +{n(d.rise, 0)} K'
+        f'Drehmoment <b>{_report.torque_text(d.torque)}</b> bei {n(d.rpm, 0)} U/min · Leerlauf {n(d.rpm0, 0)} U/min<br>'
+        f'{"3 Platinen" if d.p.boards == 3 else "1 Platine"}, {d.layers} Lagen, {n(d.outer_oz, 0)} oz, {d.coils} Spulen,'
+        f' {d.poles} Pole, B {n(d.b1, 2)} T, Erwärmung +{n(d.rise, 0)} K'
     )
 
 
@@ -166,6 +176,10 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             inputs.addValueInput('id', 'Innendurchmesser', 'mm', adsk.core.ValueInput.createByString('10 mm'))
             inputs.addFloatSpinnerCommandInput('volt', 'Spannung (V)', '', 1, 400, 1, 12)
             inputs.addFloatSpinnerCommandInput('power', 'Motorleistung W (Welle)', '', 0, 5000, 1, 0)
+            _dropdown(inputs, 'boards', 'Aufbau', BOARDS)
+            _dropdown(inputs, 'rotor', 'Magnete', ROTORS)
+            _dropdown(inputs, 'magnet', 'Magnetsorte', GRADES)
+            inputs.addValueInput('magnet_h', 'Magnetdicke je Seite', 'mm', adsk.core.ValueInput.createByString('5 mm'))
             _dropdown(inputs, 'layers', 'Lagen', LAYERS)
             _dropdown(inputs, 'coils', 'Spulen', COILS)
             _dropdown(inputs, 'outer_oz', 'Kupfer außen', OUTER)
@@ -174,7 +188,8 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             grp = inputs.addGroupCommandInput('adv', 'Erweitert')
             grp.isExpanded = False
             gi = grp.children
-            gi.addFloatSpinnerCommandInput('b_gap', 'Flussdichte Luftspalt (T)', '', 0.05, 1.5, 0.05, 0.3)
+            gi.addFloatSpinnerCommandInput('clearance', 'Luft Platine–Magnet je Seite (mm)', '', 0.1, 5, 0.1, 0.5)
+            gi.addFloatSpinnerCommandInput('b_gap', 'Flussdichte vorgeben T (0 = aus Magneten)', '', 0, 1.5, 0.05, 0)
             gi.addFloatSpinnerCommandInput('rise', 'Max. Erwärmung (K)', '', 5, 120, 5, 40)
             gi.addFloatSpinnerCommandInput('max_rpm', 'Max. Leerlaufdrehzahl (U/min)', '', 1000, 200000, 1000, 10000)
             gi.addFloatSpinnerCommandInput('min_trace', 'Min. Bahnbreite mm (0 = auto)', '', 0, 2, 0.01, 0)
@@ -188,6 +203,7 @@ class CreatedHandler(adsk.core.CommandCreatedEventHandler):
             inputs.addTextBoxCommandInput('result', 'Ergebnis', '', 18, True)
             _live(inputs, 'od')
             inputs.addBoolValueInput('pcb', 'Als PCB in Fusion Electronics öffnen', True, '', True)
+            inputs.addBoolValueInput('rotor', 'Rotor & Stapel als 3D-Baugruppe (neues Design)', True, '', True)
             inputs.addBoolValueInput('draw', '3D-Skizzen in dieses Design zeichnen', True, '', False)
             inputs.addBoolValueInput('one_coil', '  nur eine Spule (schneller)', True, '', False)
             inputs.addBoolValueInput('body', '  Leiterplatte als Körper', True, '', True)
@@ -234,6 +250,8 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
                 return
             if inputs.itemById('pcb').value:
                 _open_pcb(d, lay, text)
+            if inputs.itemById('rotor').value:
+                _new_rotor(d)
             if inputs.itemById('kicad').value:
                 dlg = _ui.createFileDialog()
                 dlg.title = 'KiCad-Platine speichern'
@@ -261,10 +279,26 @@ class ExecuteHandler(adsk.core.CommandEventHandler):
             _ui.messageBox('PegaCoil:\n' + traceback.format_exc())
 
 
+def _new_rotor(d):
+    """Neues Design (Baugruppe) mit Rotorscheiben, Magneten, Statoren und Welle."""
+    _app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    des = adsk.fusion.Design.cast(_app.activeProduct)
+    for intent in (adsk.fusion.DesignIntentTypes.AssemblyDesignIntentType,
+                   adsk.fusion.DesignIntentTypes.HybridDesignIntentType):
+        try:
+            des.designIntent = intent
+            break
+        except Exception:
+            pass
+    motor = fusion_rotor.draw(des, d)
+    _app.activeViewport.fit()
+    return motor
+
+
 def _open_pcb(d, lay, text):
     """EAGLE-Platine schreiben, ins aktive Projekt (Ordner „PegaCoil“) hochladen und als PCB öffnen."""
     p = d.p
-    name = f'PegaCoil_{p.outer_d:g}x{p.inner_d:g}_{d.coils}S_{d.layers}L_{d.p_mech:.0f}W'
+    name = f'PegaCoil_{p.outer_d:g}x{p.inner_d:g}_{d.coils}S_{d.layers}L_{d.p_mech:.0f}W' + ('_3Stk' if p.boards == 3 else '')
     out_dir = os.path.join(tempfile.gettempdir(), 'PegaCoil')
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, name + '.brd')
